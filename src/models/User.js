@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const ROLES = ['agent', 'client', 'shopper', 'vendor'];
+const ROLES = ['agent','client','buyer','vendor'];
 
 const userSchema = new mongoose.Schema(
     {
