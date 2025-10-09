@@ -65,3 +65,17 @@ exports.login = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+exports.me = async (req, res) => {
+  try {
+    res.json({
+      user: {
+        id: req.user.sub,
+        email: req.user.email,
+        role: req.user.role
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+};
