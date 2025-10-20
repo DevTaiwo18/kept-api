@@ -1,4 +1,3 @@
-// src/utils/sendEmail.js
 const nodemailer = require('nodemailer');
 
 let transporter;

@@ -2,10 +2,69 @@ const fs = require('fs/promises');
 const { z } = require('zod');
 const Item = require('../models/Item');
 const ClientJob = require('../models/ClientJob');
+const { User } = require('../models/User');
+const { sendEmail } = require('../utils/sendEmail');
 const cloudinary = require('../config/cloudinary');
 const openai = require('../config/openai');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function getEmailTemplate(name, content) {
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f4f4f4;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px 0;">
+          <tr>
+            <td align="center">
+              <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <tr>
+                  <td style="background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); padding: 30px 40px; text-align: center;">
+                    <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-family: Arial, sans-serif; font-weight: 600;">
+                      Kept House
+                    </h1>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 40px 40px 30px 40px;">
+                    <h2 style="color: #101010; margin: 0 0 20px 0; font-size: 22px; font-family: Arial, sans-serif; font-weight: 500;">
+                      Hi ${name},
+                    </h2>
+                    ${content}
+                  </td>
+                </tr>
+                <tr>
+                  <td style="background-color: #f9f9f9; padding: 25px 40px; border-top: 1px solid #e0e0e0;">
+                    <p style="font-size: 14px; line-height: 1.6; color: #666; margin: 0 0 10px 0; font-family: Arial, sans-serif;">
+                      Best regards,<br/>
+                      <strong style="color: #333;">The Kept House Team</strong>
+                    </p>
+                    <p style="font-size: 12px; line-height: 1.5; color: #999; margin: 15px 0 0 0; font-family: Arial, sans-serif;">
+                      If you have any questions, feel free to contact us at support@kepthouse.com
+                    </p>
+                  </td>
+                </tr>
+              </table>
+              <table width="600" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="padding: 20px; text-align: center;">
+                    <p style="font-size: 12px; color: #999; margin: 0; font-family: Arial, sans-serif;">
+                      © ${new Date().getFullYear()} Kept House. All rights reserved.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  `;
+}
 
 function transformCloudinaryUrl(u) {
   try {
@@ -74,6 +133,26 @@ async function aiAnalyzeSinglePhoto(url, prompt, maxRetries = 4) {
   throw lastErr || new Error('ai_analyze_failed');
 }
 
+const lastPhotoEmailSent = new Map();
+
+function shouldSendPhotoEmail(itemId, totalPhotos) {
+  const key = String(itemId);
+  const now = Date.now();
+  const lastSent = lastPhotoEmailSent.get(key);
+  
+  if (lastSent && (now - lastSent) < 3600000) {
+    return false;
+  }
+  
+  const milestones = [10, 20, 50];
+  if (milestones.includes(totalPhotos)) {
+    lastPhotoEmailSent.set(key, now);
+    return true;
+  }
+  
+  return false;
+}
+
 const createItemSchema = z.object({
   jobId: z.string(),
   title: z.string().optional(),
@@ -106,7 +185,7 @@ exports.createItem = async (req, res) => {
 exports.uploadPhotos = async (req, res) => {
   try {
     const { id } = req.params;
-    const item = await Item.findById(id).populate('job', 'client');
+    const item = await Item.findById(id).populate('job', 'client accountManager propertyAddress contractSignor');
     if (!item) return res.status(404).json({ message: 'Item not found' });
     if (req.user.role === 'client' && String(item.job.client) !== req.user.sub) return res.status(403).json({ message: 'Forbidden' });
     if (!req.files?.length) return res.status(400).json({ message: 'No files uploaded' });
@@ -142,6 +221,44 @@ exports.uploadPhotos = async (req, res) => {
       }
       
       await item.save();
+
+      try {
+        const totalPhotos = item.photos.length;
+        
+        if (shouldSendPhotoEmail(item._id, totalPhotos)) {
+          const itemTitle = item.title || `Item at ${item.job?.propertyAddress || 'property'}`;
+          
+          const content = `
+            <div style="text-align: center; padding: 20px 0;">
+              <div style="display: inline-block; background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); border-radius: 50%; width: 80px; height: 80px; line-height: 80px; margin-bottom: 20px;">
+                <span style="font-size: 40px;">📸</span>
+              </div>
+            </div>
+            <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
+              New photos have been uploaded and are ready for your review.
+            </p>
+            <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
+              <p style="font-size: 14px; line-height: 1.6; color: #555; margin: 0; font-family: Arial, sans-serif;">
+                <strong>Item:</strong> ${itemTitle}<br/>
+                <strong>New Photos:</strong> ${added.length}<br/>
+                <strong>Total Photos:</strong> ${totalPhotos}
+              </p>
+            </div>
+            <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
+              Please review these photos when you get a chance and approve or request changes as needed.
+            </p>
+          `;
+
+          await sendEmail({
+            to: 'Admin@keptestate.com',
+            subject: 'New item photos ready for review',
+            html: getEmailTemplate('Admin', content),
+            text: `Hi Admin, New photos (${added.length}) have been uploaded to item ${itemTitle}. Total photos: ${totalPhotos}. Please review when ready. Best regards, The Kept House Team`,
+          });
+        }
+      } catch (emailErr) {
+        console.error('Failed to send photo upload email:', emailErr);
+      }
     }
 
     res.status(failed.length && !added.length ? 502 : 200).json({
@@ -159,7 +276,7 @@ exports.uploadPhotos = async (req, res) => {
 exports.analyzeWithAI = async (req, res) => {
   try {
     const { id } = req.params;
-    const item = await Item.findById(id).populate('job', 'client');
+    const item = await Item.findById(id).populate('job', 'client accountManager');
     if (!item) return res.status(404).json({ message: 'Item not found' });
     if (req.user.role === 'client' && String(item.job.client) !== req.user.sub) return res.status(403).json({ message: 'Forbidden' });
     if (!item.photos.length) return res.status(400).json({ message: 'No photos to analyze' });
@@ -207,6 +324,7 @@ exports.analyzeWithAI = async (req, res) => {
     item.analyzedPhotoIndices = Array.from(analyzedIndices);
     
     await item.save();
+
     res.json({ 
       ai: item.ai, 
       status: item.status, 
@@ -222,7 +340,7 @@ exports.approveItem = async (req, res) => {
   try {
     const { id } = req.params;
     const { items } = req.body;
-    const item = await Item.findById(id).populate('job', 'client');
+    const item = await Item.findById(id).populate('job', 'client contactEmail contractSignor');
     if (!item) return res.status(404).json({ message: 'Item not found' });
     if (req.user.role !== 'agent') return res.status(403).json({ message: 'Agents only' });
     if (!items || !Array.isArray(items) || items.length === 0) return res.status(400).json({ message: 'No items to approve' });
@@ -245,6 +363,42 @@ exports.approveItem = async (req, res) => {
 
     item.status = 'approved';
     await item.save();
+
+    try {
+      const clientEmail = item.job.contactEmail;
+      const clientName = item.job.contractSignor;
+      
+      if (clientEmail) {
+        const content = `
+          <div style="text-align: center; padding: 20px 0;">
+            <div style="display: inline-block; background-color: #e8f5e9; border-radius: 50%; width: 80px; height: 80px; line-height: 80px; margin-bottom: 20px;">
+              <span style="font-size: 40px;">✅</span>
+            </div>
+          </div>
+          <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
+            Great news! <strong style="color: #e6c35a;">${item.title || 'An item'}</strong> in your project has been approved and is moving forward.
+          </p>
+          <div style="background-color: #e8f5e9; border-left: 4px solid #4caf50; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
+            <p style="font-size: 14px; line-height: 1.6; color: #2e7d32; margin: 0; font-family: Arial, sans-serif;">
+              ✓ <strong>Status:</strong> Approved<br/>
+              ✓ <strong>Items Approved:</strong> ${newApprovedItems.length}
+            </p>
+          </div>
+          <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
+            Your project is progressing smoothly. We'll keep you updated with any further developments.
+          </p>
+        `;
+
+        await sendEmail({
+          to: clientEmail,
+          subject: 'An item in your project was approved',
+          html: getEmailTemplate(clientName, content),
+          text: `Hi ${clientName}, Good news! ${item.title || 'An item'} in your project has been approved and is moving forward. Best regards, The Kept House Team`,
+        });
+      }
+    } catch (emailErr) {
+      console.error('Failed to send item approval email:', emailErr);
+    }
     
     res.json({
       status: item.status,

@@ -1,6 +1,7 @@
 const { z } = require('zod');
 const ClientJob = require('../models/ClientJob');
 const { User } = require('../models/User');
+const { sendEmail } = require('../utils/sendEmail');
 
 const servicesSchema = z.object({
   liquidation: z.boolean().optional(),
@@ -52,6 +53,63 @@ const addNoteSchema = z.object({
   note: z.string().min(1),
 });
 
+function getEmailTemplate(name, content) {
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f4f4f4;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px 0;">
+          <tr>
+            <td align="center">
+              <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <tr>
+                  <td style="background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); padding: 30px 40px; text-align: center;">
+                    <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-family: Arial, sans-serif; font-weight: 600;">
+                      Kept House
+                    </h1>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 40px 40px 30px 40px;">
+                    <h2 style="color: #101010; margin: 0 0 20px 0; font-size: 22px; font-family: Arial, sans-serif; font-weight: 500;">
+                      Hi ${name},
+                    </h2>
+                    ${content}
+                  </td>
+                </tr>
+                <tr>
+                  <td style="background-color: #f9f9f9; padding: 25px 40px; border-top: 1px solid #e0e0e0;">
+                    <p style="font-size: 14px; line-height: 1.6; color: #666; margin: 0 0 10px 0; font-family: Arial, sans-serif;">
+                      Best regards,<br/>
+                      <strong style="color: #333;">The Kept House Team</strong>
+                    </p>
+                    <p style="font-size: 12px; line-height: 1.5; color: #999; margin: 15px 0 0 0; font-family: Arial, sans-serif;">
+                      If you have any questions, feel free to contact us at support@kepthouse.com
+                    </p>
+                  </td>
+                </tr>
+              </table>
+              <table width="600" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="padding: 20px; text-align: center;">
+                    <p style="font-size: 12px; color: #999; margin: 0; font-family: Arial, sans-serif;">
+                      © ${new Date().getFullYear()} Kept House. All rights reserved.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  `;
+}
+
 function ensureOwnershipOrAgent(job, req) {
   const isAgent = req.user.role === 'agent';
   const isOwner = String(job.client) === String(req.user.sub);
@@ -60,6 +118,20 @@ function ensureOwnershipOrAgent(job, req) {
     err.status = 403;
     throw err;
   }
+}
+
+function getStageName(stage) {
+  const stageNames = {
+    walkthrough: 'Walkthrough',
+    staging: 'Staging',
+    online_sale: 'Online Sale',
+    estate_sale: 'Estate Sale',
+    donations: 'Donations',
+    hauling: 'Hauling',
+    payout_processing: 'Payout Processing',
+    closing: 'Closing',
+  };
+  return stageNames[stage] || stage;
 }
 
 exports.createJob = async (req, res) => {
@@ -80,6 +152,39 @@ exports.createJob = async (req, res) => {
         ? new Date(input.desiredCompletionDate)
         : undefined,
     });
+
+    try {
+      const content = `
+        <div style="text-align: center; padding: 20px 0;">
+          <div style="display: inline-block; background-color: #e8f5e9; border-radius: 50%; width: 80px; height: 80px; line-height: 80px; margin-bottom: 20px;">
+            <span style="font-size: 40px;">🎉</span>
+          </div>
+        </div>
+        <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
+          Great news! Your project at <strong style="color: #e6c35a;">${input.propertyAddress}</strong> has been successfully created.
+        </p>
+        <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
+          <p style="font-size: 14px; line-height: 1.6; color: #555; margin: 0; font-family: Arial, sans-serif;">
+            <strong>Project Details:</strong><br/>
+            Location: ${input.propertyAddress}<br/>
+            Contact: ${input.contactEmail}<br/>
+            Phone: ${input.contactPhone}
+          </p>
+        </div>
+        <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
+          We're here to make this process smooth and stress-free. Our team will reach out shortly with next steps. If you have any questions, feel free to reach out anytime.
+        </p>
+      `;
+
+      await sendEmail({
+        to: input.contactEmail,
+        subject: 'Kept House — Your project has been created',
+        html: getEmailTemplate(input.contractSignor, content),
+        text: `Hi ${input.contractSignor}, Great news! Your project at ${input.propertyAddress} has been successfully created. We're here to make this process smooth and stress-free. Best regards, The Kept House Team`,
+      });
+    } catch (emailErr) {
+      console.error('Failed to send job creation email:', emailErr);
+    }
 
     res.status(201).json({ job });
   } catch (err) {
@@ -138,8 +243,56 @@ exports.updateStage = async (req, res) => {
     const job = await ClientJob.findById(req.params.id);
     if (!job) return res.status(404).json({ message: 'Not found' });
     if (req.user.role !== 'agent') return res.status(403).json({ message: 'Forbidden' });
+    
     job.stage = progressStage;
     await job.save();
+
+    try {
+      const stageName = getStageName(progressStage);
+
+      const stageIcons = {
+        walkthrough: '🚶',
+        staging: '🎬',
+        online_sale: '🛒',
+        estate_sale: '🏷️',
+        donations: '🤝',
+        hauling: '🚚',
+        payout_processing: '💰',
+        closing: '✅',
+      };
+      
+      const content = `
+        <div style="text-align: center; padding: 20px 0;">
+          <div style="display: inline-block; background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); border-radius: 50%; width: 80px; height: 80px; line-height: 80px; margin-bottom: 20px;">
+            <span style="font-size: 40px;">${stageIcons[progressStage] || '📋'}</span>
+          </div>
+        </div>
+        <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
+          Great progress! Your project at <strong style="color: #e6c35a;">${job.propertyAddress}</strong> has moved to a new stage.
+        </p>
+        <div style="background: linear-gradient(135deg, #f9f9f9 0%, #ffffff 100%); border: 2px solid #e6c35a; border-radius: 8px; padding: 25px; text-align: center; margin: 25px 0;">
+          <p style="font-size: 14px; color: #666; margin: 0 0 10px 0; font-family: Arial, sans-serif; text-transform: uppercase; letter-spacing: 1px;">
+            Current Stage
+          </p>
+          <h2 style="color: #e6c35a; font-family: Arial, sans-serif; font-size: 28px; margin: 0; font-weight: 600;">
+            ${stageName}
+          </h2>
+        </div>
+        <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
+          We'll keep you updated as things progress. If you have any questions about this stage, don't hesitate to reach out.
+        </p>
+      `;
+      
+      await sendEmail({
+        to: job.contactEmail,
+        subject: `Your project moved to ${stageName}`,
+        html: getEmailTemplate(job.contractSignor, content),
+        text: `Hi ${job.contractSignor}, Great progress! Your project at ${job.propertyAddress} has moved to the ${stageName} stage. We'll keep you updated as things progress. Best regards, The Kept House Team`,
+      });
+    } catch (emailErr) {
+      console.error('Failed to send stage update email:', emailErr);
+    }
+
     res.json({ job: { _id: job._id, stage: job.stage, updatedAt: job.updatedAt } });
   } catch (err) {
     if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
