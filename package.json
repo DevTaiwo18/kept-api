@@ -25,6 +25,7 @@
     "multer-storage-cloudinary": "^4.0.0",
     "nodemailer": "^7.0.9",
     "openai": "^6.3.0",
+    "stripe": "^19.1.0",
     "zod": "^4.1.12"
   },
   "devDependencies": {

@@ -7,13 +7,13 @@ const ItemSchema = new mongoose.Schema(
     uploaderRole: { type: String, enum: ['client', 'agent'], index: true },
 
     photos: [{ type: String, required: true }],
-    analyzedPhotoIndices: [{ type: Number }],
+    analyzedPhotoIndices: { type: [Number], default: [] },
 
     status: {
       type: String,
       enum: ['draft', 'needs_review', 'approved', 'listed', 'sold', 'donated'],
       default: 'draft',
-      index: true,
+      index: true
     },
 
     ai: [{
@@ -35,13 +35,13 @@ const ItemSchema = new mongoose.Schema(
           'Collectibles',
           'Books/Media',
           'Clothing',
-          'Misc',
+          'Misc'
         ],
-        default: 'Misc',
+        default: 'Misc'
       },
       priceLow: Number,
       priceHigh: Number,
-      confidence: Number,
+      confidence: Number
     }],
 
     approvedItems: [{
@@ -51,8 +51,10 @@ const ItemSchema = new mongoose.Schema(
       category: String,
       priceLow: Number,
       priceHigh: Number,
-      price: Number,
+      price: Number
     }],
+
+    soldPhotoIndices: { type: [Number], default: [] },
 
     reopenHistory: [{
       reopenedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -66,7 +68,7 @@ const ItemSchema = new mongoose.Schema(
     price: Number,
 
     soldAt: { type: Date },
-    donationReceiptUrl: { type: String },
+    donationReceiptUrl: { type: String }
   },
   { timestamps: true }
 );
