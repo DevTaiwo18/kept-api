@@ -40,7 +40,11 @@ exports.listItems = async (req, res) => {
     docs.forEach(doc => {
       if (!doc.approvedItems || !doc.approvedItems.length) return;
       
+      const soldIndices = doc.soldPhotoIndices || [];
+      
       doc.approvedItems.forEach(approvedItem => {
+        if (soldIndices.includes(approvedItem.photoIndex)) return;
+        
         const photoUrl = doc.photos[approvedItem.photoIndex];
         if (!photoUrl) return;
         
@@ -120,7 +124,13 @@ exports.getItem = async (req, res) => {
     const doc = await Item.findOne({ _id: itemId, status: 'approved' }).lean();
     if (!doc) return res.status(404).json({ message: 'Item not found' });
 
+    const soldIndices = doc.soldPhotoIndices || [];
+
     if (photoIndex !== null) {
+      if (soldIndices.includes(photoIndex)) {
+        return res.status(404).json({ message: 'Item is no longer available' });
+      }
+
       const approvedItem = doc.approvedItems?.find(
         item => item.photoIndex === photoIndex
       );
@@ -149,19 +159,26 @@ exports.getItem = async (req, res) => {
     }
 
     if (doc.approvedItems && doc.approvedItems.length > 0) {
-      const firstApproved = doc.approvedItems[0];
-      const photoUrl = doc.photos[firstApproved.photoIndex];
+      const firstAvailable = doc.approvedItems.find(
+        item => !soldIndices.includes(item.photoIndex)
+      );
+
+      if (!firstAvailable) {
+        return res.status(404).json({ message: 'No items available' });
+      }
+
+      const photoUrl = doc.photos[firstAvailable.photoIndex];
       
       return res.json({
-        _id: `${doc._id}_${firstApproved.photoIndex}`,
+        _id: `${doc._id}_${firstAvailable.photoIndex}`,
         itemId: doc._id,
-        photoIndex: firstApproved.photoIndex,
-        title: firstApproved.title || '',
-        description: firstApproved.description || '',
-        category: firstApproved.category || 'Misc',
-        price: computeDisplayPrice(firstApproved),
-        priceLow: firstApproved.priceLow ?? null,
-        priceHigh: firstApproved.priceHigh ?? null,
+        photoIndex: firstAvailable.photoIndex,
+        title: firstAvailable.title || '',
+        description: firstAvailable.description || '',
+        category: firstAvailable.category || 'Misc',
+        price: computeDisplayPrice(firstAvailable),
+        priceLow: firstAvailable.priceLow ?? null,
+        priceHigh: firstAvailable.priceHigh ?? null,
         photo: photoUrl,
         photos: [photoUrl],
         job: doc.job,
@@ -206,7 +223,11 @@ exports.getRelated = async (req, res) => {
     docs.forEach(doc => {
       if (!doc.approvedItems) return;
       
+      const soldIndices = doc.soldPhotoIndices || [];
+      
       doc.approvedItems.forEach(approvedItem => {
+        if (soldIndices.includes(approvedItem.photoIndex)) return;
+        
         if (targetCategory && approvedItem.category !== targetCategory) return;
         
         const photoUrl = doc.photos[approvedItem.photoIndex];
@@ -262,7 +283,11 @@ exports.searchItems = async (req, res) => {
     docs.forEach(doc => {
       if (!doc.approvedItems || !doc.approvedItems.length) return;
       
+      const soldIndices = doc.soldPhotoIndices || [];
+      
       doc.approvedItems.forEach(approvedItem => {
+        if (soldIndices.includes(approvedItem.photoIndex)) return;
+        
         const titleMatch = rx.test(approvedItem.title || '');
         const descMatch = rx.test(approvedItem.description || '');
         

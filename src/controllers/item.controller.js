@@ -192,7 +192,7 @@ exports.uploadPhotos = async (req, res) => {
 
     const added = [];
     const failed = [];
-    const BATCH = 4;
+    const BATCH = 3;
 
     for (let i = 0; i < req.files.length; i += BATCH) {
       const slice = req.files.slice(i, i + BATCH);
@@ -202,14 +202,42 @@ exports.uploadPhotos = async (req, res) => {
             folder: 'kept-house/items',
             resource_type: 'image',
             overwrite: false,
+            timeout: 120000,
+            chunk_size: 6000000,
           })
         )
       );
+      
       await Promise.allSettled(slice.map(f => fs.unlink(f.path).catch(() => {})));
+      
       results.forEach((r, idx) => {
         const original = slice[idx]?.originalname || 'unknown';
-        if (r.status === 'fulfilled') added.push(r.value.secure_url);
-        else failed.push({ file: original, reason: r.reason?.message || 'upload failed' });
+        if (r.status === 'fulfilled') {
+          added.push(r.value.secure_url);
+        } else {
+          const error = r.reason;
+          console.error(`Failed to upload ${original}:`, error);
+          
+          let errorMsg = error?.message || 'upload failed';
+          if (error?.code === 'ENOTFOUND') {
+            errorMsg = 'Network error: Cannot reach Cloudinary servers. Please check your internet connection.';
+          } else if (error?.code === 'ETIMEDOUT') {
+            errorMsg = 'Upload timeout: Connection to Cloudinary timed out.';
+          } else if (error?.code === 'ECONNREFUSED') {
+            errorMsg = 'Connection refused: Cloudinary servers are not responding.';
+          } else if (error?.http_code === 401) {
+            errorMsg = 'Authentication error: Invalid Cloudinary credentials.';
+          } else if (error?.http_code === 403) {
+            errorMsg = 'Permission denied: Check your Cloudinary account settings.';
+          }
+          
+          failed.push({ 
+            file: original, 
+            reason: errorMsg,
+            code: error?.code,
+            httpCode: error?.http_code
+          });
+        }
       });
     }
 
@@ -222,43 +250,45 @@ exports.uploadPhotos = async (req, res) => {
       
       await item.save();
 
-      try {
-        const totalPhotos = item.photos.length;
-        
-        if (shouldSendPhotoEmail(item._id, totalPhotos)) {
-          const itemTitle = item.title || `Item at ${item.job?.propertyAddress || 'property'}`;
+      setImmediate(async () => {
+        try {
+          const totalPhotos = item.photos.length;
           
-          const content = `
-            <div style="text-align: center; padding: 20px 0;">
-              <div style="display: inline-block; background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); border-radius: 50%; width: 80px; height: 80px; line-height: 80px; margin-bottom: 20px;">
-                <span style="font-size: 40px;">📸</span>
+          if (shouldSendPhotoEmail(item._id, totalPhotos)) {
+            const itemTitle = item.title || `Item at ${item.job?.propertyAddress || 'property'}`;
+            
+            const content = `
+              <div style="text-align: center; padding: 20px 0;">
+                <div style="display: inline-block; background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); border-radius: 50%; width: 80px; height: 80px; line-height: 80px; margin-bottom: 20px;">
+                  <span style="font-size: 40px;">📸</span>
+                </div>
               </div>
-            </div>
-            <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
-              New photos have been uploaded and are ready for your review.
-            </p>
-            <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
-              <p style="font-size: 14px; line-height: 1.6; color: #555; margin: 0; font-family: Arial, sans-serif;">
-                <strong>Item:</strong> ${itemTitle}<br/>
-                <strong>New Photos:</strong> ${added.length}<br/>
-                <strong>Total Photos:</strong> ${totalPhotos}
+              <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
+                New photos have been uploaded and are ready for your review.
               </p>
-            </div>
-            <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
-              Please review these photos when you get a chance and approve or request changes as needed.
-            </p>
-          `;
+              <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
+                <p style="font-size: 14px; line-height: 1.6; color: #555; margin: 0; font-family: Arial, sans-serif;">
+                  <strong>Item:</strong> ${itemTitle}<br/>
+                  <strong>New Photos:</strong> ${added.length}<br/>
+                  <strong>Total Photos:</strong> ${totalPhotos}
+                </p>
+              </div>
+              <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
+                Please review these photos when you get a chance and approve or request changes as needed.
+              </p>
+            `;
 
-          await sendEmail({
-            to: 'Admin@keptestate.com',
-            subject: 'New item photos ready for review',
-            html: getEmailTemplate('Admin', content),
-            text: `Hi Admin, New photos (${added.length}) have been uploaded to item ${itemTitle}. Total photos: ${totalPhotos}. Please review when ready. Best regards, The Kept House Team`,
-          });
+            await sendEmail({
+              to: 'Admin@keptestate.com',
+              subject: 'New item photos ready for review',
+              html: getEmailTemplate('Admin', content),
+              text: `Hi Admin, New photos (${added.length}) have been uploaded to item ${itemTitle}. Total photos: ${totalPhotos}. Please review when ready. Best regards, The Kept House Team`,
+            });
+          }
+        } catch (emailErr) {
+          console.error('Failed to send photo upload email:', emailErr);
         }
-      } catch (emailErr) {
-        console.error('Failed to send photo upload email:', emailErr);
-      }
+      });
     }
 
     res.status(failed.length && !added.length ? 502 : 200).json({
@@ -266,9 +296,10 @@ exports.uploadPhotos = async (req, res) => {
       failed: failed.length,
       photos: item.photos,
       status: item.status,
-      errors: failed,
+      errors: failed.length > 0 ? failed : undefined,
     });
   } catch (err) {
+    console.error('Upload handler error:', err);
     res.status(500).json({ message: 'Upload failed', error: String(err?.message || err) });
   }
 };

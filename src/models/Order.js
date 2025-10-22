@@ -14,7 +14,16 @@ const OrderItemSchema = new mongoose.Schema({
 const DeliveryDetailsSchema = new mongoose.Schema({
   type: { type: String, enum: ['pickup', 'delivery'], default: 'pickup' },
   scheduledAt: { type: Date },
+  
+  fullName: { type: String, required: true },
+  phoneNumber: { type: String, required: true },
+  email: { type: String },
+  
   address: { type: String },
+  city: { type: String },
+  state: { type: String },
+  zipCode: { type: String },
+  
   instructions: { type: String }
 }, { _id: false });
 

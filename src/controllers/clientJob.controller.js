@@ -211,7 +211,7 @@ exports.listJobs = async (req, res) => {
     const jobs = await ClientJob.find(filter)
       .sort({ _id: -1 })
       .limit(q.limit + 1)
-      .select('contractSignor propertyAddress stage desiredCompletionDate createdAt');
+      .select('contractSignor propertyAddress stage desiredCompletionDate createdAt finance');
 
     let nextCursor = null;
     if (jobs.length > q.limit) {

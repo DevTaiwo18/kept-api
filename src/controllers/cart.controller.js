@@ -24,6 +24,9 @@ async function validateAndGetItem(itemId) {
 
     if (photoIndex === null || !doc.approvedItems) return null;
 
+    const soldIndices = doc.soldPhotoIndices || [];
+    if (soldIndices.includes(photoIndex)) return null;
+
     const approvedItem = doc.approvedItems.find(
         item => item.photoIndex === photoIndex
     );
@@ -95,10 +98,11 @@ exports.getCart = async (req, res) => {
         const cart = await Cart.findOne({ user: userId });
 
         if (!cart || cart.items.length === 0) {
-            return res.json({ items: [], total: 0, count: 0 });
+            return res.json({ items: [], total: 0, count: 0, removedCount: 0 });
         }
 
         const cartItems = [];
+        const unavailableItemIds = [];
         let total = 0;
 
         for (const cartItem of cart.items) {
@@ -109,13 +113,23 @@ exports.getCart = async (req, res) => {
                     addedAt: cartItem.addedAt
                 });
                 total += validatedItem.price;
+            } else {
+                unavailableItemIds.push(cartItem.itemId);
             }
+        }
+
+        if (unavailableItemIds.length > 0) {
+            await Cart.updateOne(
+                { user: userId },
+                { $pull: { items: { itemId: { $in: unavailableItemIds } } } }
+            );
         }
 
         res.json({
             items: cartItems,
             total,
-            count: cartItems.length
+            count: cartItems.length,
+            removedCount: unavailableItemIds.length
         });
     } catch (err) {
         console.error('Get cart error:', err);
