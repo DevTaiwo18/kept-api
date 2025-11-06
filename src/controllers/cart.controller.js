@@ -17,34 +17,40 @@ function computeDisplayPrice(item) {
 async function validateAndGetItem(itemId) {
     const parts = itemId.split('_');
     const docId = parts[0];
-    const photoIndex = parts.length > 1 ? parseInt(parts[1], 10) : null;
+    const itemNumber = parts.length > 1 ? parseInt(parts[1], 10) : null;
 
     const doc = await Item.findOne({ _id: docId, status: 'approved' }).lean();
     if (!doc) return null;
 
-    if (photoIndex === null || !doc.approvedItems) return null;
+    if (itemNumber === null || !doc.approvedItems) return null;
 
-    const soldIndices = doc.soldPhotoIndices || [];
-    if (soldIndices.includes(photoIndex)) return null;
+    const soldIndices = new Set(doc.soldPhotoIndices || []);
 
     const approvedItem = doc.approvedItems.find(
-        item => item.photoIndex === photoIndex
+        item => item.itemNumber === itemNumber
     );
 
     if (!approvedItem) return null;
 
-    const photoUrl = doc.photos[approvedItem.photoIndex];
-    if (!photoUrl) return null;
+    const photoIndices = approvedItem.photoIndices || [approvedItem.photoIndex];
+    const isSold = photoIndices.some(idx => soldIndices.has(idx));
+
+    if (isSold) return null;
+
+    const photos = photoIndices.map(idx => doc.photos[idx]).filter(Boolean);
+    if (photos.length === 0) return null;
 
     return {
         _id: itemId,
         itemId: docId,
-        photoIndex: approvedItem.photoIndex,
+        itemNumber: approvedItem.itemNumber,
+        photoIndices: photoIndices,
         title: approvedItem.title || '',
         description: approvedItem.description || '',
         category: approvedItem.category || 'Misc',
         price: computeDisplayPrice(approvedItem),
-        photo: photoUrl,
+        photo: photos[0],
+        photos: photos,
         quantity: 1
     };
 }

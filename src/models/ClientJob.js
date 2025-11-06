@@ -9,8 +9,8 @@ const ServicesSchema = new mongoose.Schema({
 }, { _id: false });
 
 const ClientJobSchema = new mongoose.Schema({
-  client: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true }, // role=client
-  accountManager: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true }, // role=agent
+  client: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  accountManager: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
 
   contractSignor: { type: String, required: true, trim: true },
   propertyAddress: { type: String, required: true },
@@ -19,6 +19,18 @@ const ClientJobSchema = new mongoose.Schema({
 
   desiredCompletionDate: { type: Date },
   services: { type: ServicesSchema, default: () => ({}) },
+  
+  serviceFee: { type: Number, default: 0 }, 
+  depositAmount: { type: Number, default: 0 }, 
+  depositPaidAt: { type: Date },
+  contractFileUrl: { type: String, default: '' }, 
+  scopeNotes: { type: String, default: '' },
+
+  status: {
+    type: String,
+    enum: ['awaiting_deposit', 'active', 'completed', 'cancelled'],
+    default: 'awaiting_deposit',
+  },
 
   specialRequests: {
     notForSale: { type: String, default: '' },
@@ -44,7 +56,7 @@ const ClientJobSchema = new mongoose.Schema({
     haulingCost: { type: Number, default: 0 },
     net: { type: Number, default: 0 },
     daily: [{
-      label: { type: String }, 
+      label: { type: String },
       amount: { type: Number, default: 0 },
       at: { type: Date, default: Date.now }
     }]
@@ -57,7 +69,27 @@ const ClientJobSchema = new mongoose.Schema({
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   }],
 
-  marketingPhotos: [{ type: String }], 
+  marketingPhotos: [{ type: String }],
+
+  stripe: {
+    sessionId: { type: String },
+    paymentIntentId: { type: String },
+    sessionStatus: { type: String }
+  }
+
 }, { timestamps: true });
+
+ClientJobSchema.pre('save', function(next) {
+  if (this.finance) {
+    const gross = this.finance.gross || 0;
+    const fees = this.finance.fees || 0;
+    const haulingCost = this.finance.haulingCost || 0;
+    const serviceFee = this.serviceFee || 0;
+    const depositPaid = this.depositAmount || 0;
+    
+    this.finance.net = gross - fees - haulingCost - serviceFee + depositPaid;
+  }
+  next();
+});
 
 module.exports = mongoose.model('ClientJob', ClientJobSchema);

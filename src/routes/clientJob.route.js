@@ -8,8 +8,9 @@ router.use(auth);
 router.post('/', allow('client','agent'), ctrl.createJob);
 router.get('/', allow('client','agent'), ctrl.listJobs);
 router.get('/:id', allow('client','agent'), ctrl.getJob);
-router.patch('/:id/status', allow('agent'), ctrl.updateStage);
-router.post('/:id/notes', allow('client','agent'), ctrl.addStageNote);
+router.post('/:id/request-deposit', allow('agent'), ctrl.requestDeposit);
+router.post('/:id/deposit/checkout', allow('client','agent'), ctrl.createDepositCheckout);
+router.patch('/:id/progress', allow('agent'), ctrl.updateProgress);
 router.post('/:id/finance/daily', allow('agent'), ctrl.addDailySales);
 
 module.exports = router;

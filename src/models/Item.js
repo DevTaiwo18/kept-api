@@ -1,76 +1,50 @@
 const mongoose = require('mongoose');
 
-const ItemSchema = new mongoose.Schema(
-  {
-    job: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientJob', required: true, index: true },
-    uploader: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
-    uploaderRole: { type: String, enum: ['client', 'agent'], index: true },
-
-    photos: [{ type: String, required: true }],
-    analyzedPhotoIndices: { type: [Number], default: [] },
-
-    status: {
-      type: String,
-      enum: ['draft', 'needs_review', 'approved', 'listed', 'sold', 'donated'],
-      default: 'draft',
-      index: true
-    },
-
-    ai: [{
-      photoIndex: Number,
-      photoUrl: String,
-      title: String,
-      description: String,
-      category: {
-        type: String,
-        enum: [
-          'Furniture',
-          'Tools',
-          'Jewelry',
-          'Art',
-          'Electronics',
-          'Outdoor',
-          'Appliances',
-          'Kitchen',
-          'Collectibles',
-          'Books/Media',
-          'Clothing',
-          'Misc'
-        ],
-        default: 'Misc'
-      },
-      priceLow: Number,
-      priceHigh: Number,
-      confidence: Number
-    }],
-
-    approvedItems: [{
-      photoIndex: Number,
-      title: String,
-      description: String,
-      category: String,
-      priceLow: Number,
-      priceHigh: Number,
-      price: Number
-    }],
-
-    soldPhotoIndices: { type: [Number], default: [] },
-
-    reopenHistory: [{
-      reopenedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-      reason: String,
-      reopenedAt: { type: Date, default: Date.now }
-    }],
-
+const itemSchema = new mongoose.Schema({
+  job: { type: mongoose.Schema.Types.ObjectId, ref: 'ClientJob', required: true },
+  uploader: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  uploaderRole: { type: String, enum: ['client', 'agent'], required: true },
+  photos: [String],
+  photoGroups: [{
+    itemNumber: { type: Number, required: true },
+    title: { type: String, default: '' },
+    startIndex: { type: Number, required: true },
+    endIndex: { type: Number, required: true },
+    photoCount: { type: Number, required: true }
+  }],
+  analyzedGroupIndices: [Number],
+  ai: [{
+    itemNumber: Number,
+    photoIndices: [Number],
     title: String,
     description: String,
     category: String,
-    price: Number,
-
-    soldAt: { type: Date },
-    donationReceiptUrl: { type: String }
+    priceLow: Number,
+    priceHigh: Number,
+    confidence: Number,
+  }],
+  approvedItems: [{
+    itemNumber: Number,
+    photoIndices: [Number],
+    title: String,
+    description: String,
+    category: String,
+    priceLow: Number,
+    priceHigh: Number,
+    price: Number
+  }],
+  soldPhotoIndices: [Number],
+  soldAt: Date,
+  status: { 
+    type: String, 
+    enum: ['draft', 'pending', 'approved', 'needs_review'], 
+    default: 'draft' 
   },
-  { timestamps: true }
-);
+  reopenHistory: [{
+    reopenedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    reason: String,
+    reopenedAt: { type: Date, default: Date.now }
+  }]
+}, { timestamps: true });
 
-module.exports = mongoose.model('Item', ItemSchema);
+module.exports = mongoose.model('Item', itemSchema);

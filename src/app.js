@@ -11,6 +11,7 @@ const cartRoutes = require('./routes/cart.routes');
 const checkoutRoutes = require('./routes/checkout.route');
 const orderRoutes = require('./routes/orders.route');
 const webhookRoutes = require('./routes/webhook.route');
+const emailTemplateRoutes = require('./routes/emailTemplates.routes');
 
 const app = express();
 
@@ -29,6 +30,7 @@ app.use('/api/marketplace', marketplaceRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/checkout', checkoutRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/email-templates', emailTemplateRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, env: process.env.NODE_ENV || 'dev', time: new Date().toISOString() });

@@ -14,7 +14,7 @@ const {
 const router = express.Router();
 
 router.post('/', auth, allow('client', 'agent'), createItem);
-router.post('/:id/photos', auth, allow('client', 'agent'), upload.array('photos', 25), uploadPhotos);
+router.post('/:id/photos', auth, allow('client', 'agent'), upload.array('photos'), uploadPhotos);
 router.post('/:id/ai/analyze', auth, allow('client', 'agent'), analyzeWithAI);
 router.patch('/:id/approve', auth, allow('agent'), approveItem);
 router.post('/:id/reopen', auth, allow('agent'), reopenItem);

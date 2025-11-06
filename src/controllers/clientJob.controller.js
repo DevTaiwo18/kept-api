@@ -1,7 +1,22 @@
 const { z } = require('zod');
 const ClientJob = require('../models/ClientJob');
 const { User } = require('../models/User');
+const { stripe } = require('../services/stripe');
 const { sendEmail } = require('../utils/sendEmail');
+
+function calculateKeptHouseCommission(grossSales) {
+  let commission = 0;
+  
+  if (grossSales <= 7500) {
+    commission = grossSales * 0.50;
+  } else if (grossSales <= 20000) {
+    commission = (7500 * 0.50) + ((grossSales - 7500) * 0.40);
+  } else {
+    commission = (7500 * 0.50) + (12500 * 0.40) + ((grossSales - 20000) * 0.30);
+  }
+  
+  return Math.round(commission * 100) / 100;
+}
 
 const servicesSchema = z.object({
   liquidation: z.boolean().optional(),
@@ -31,27 +46,39 @@ const createJobSchema = z.object({
   marketingPhotos: z.array(z.string().url()).optional(),
 });
 
+const requestDepositSchema = z.object({
+  serviceFee: z.coerce.number().positive(),
+  depositAmount: z.coerce.number().refine((val) => val === 250 || val === 500, {
+    message: 'Deposit amount must be either 250 or 500'
+  }),
+  scopeNotes: z.string().optional(),
+});
+
 const listQuerySchema = z.object({
   stage: z.enum([
-    'walkthrough','staging','online_sale','estate_sale','donations',
-    'hauling','payout_processing','closing'
+    'walkthrough', 'staging', 'online_sale', 'estate_sale', 'donations',
+    'hauling', 'payout_processing', 'closing'
   ]).optional(),
+  status: z.enum(['awaiting_deposit', 'active', 'completed', 'cancelled']).optional(),
   q: z.string().optional(),
   limit: z.coerce.number().min(1).max(50).default(20),
   cursor: z.string().optional(),
 });
 
-const stageSchema = z.object({
-  progressStage: z.enum([
-    'walkthrough','staging','online_sale','estate_sale','donations',
-    'hauling','payout_processing','closing'
-  ]),
-});
+const stageEnum = z.enum([
+  'walkthrough', 'staging', 'online_sale', 'estate_sale', 'donations',
+  'hauling', 'payout_processing', 'closing'
+]);
 
-const addNoteSchema = z.object({
-  stage: stageSchema.shape.progressStage,
-  note: z.string().min(1),
-});
+function ensureOwnershipOrAgent(job, req) {
+  const isAgent = req.user.role === 'agent';
+  const isOwner = String(job.client) === String(req.user.sub);
+  if (!isAgent && !isOwner) {
+    const err = new Error('Forbidden');
+    err.status = 403;
+    throw err;
+  }
+}
 
 function getEmailTemplate(name, content) {
   return `
@@ -88,7 +115,7 @@ function getEmailTemplate(name, content) {
                       <strong style="color: #333;">The Kept House Team</strong>
                     </p>
                     <p style="font-size: 12px; line-height: 1.5; color: #999; margin: 15px 0 0 0; font-family: Arial, sans-serif;">
-                      If you have any questions, feel free to contact us at support@kepthouse.com
+                      If you have any questions, feel free to contact us at admin@keptestate.com
                     </p>
                   </td>
                 </tr>
@@ -110,28 +137,49 @@ function getEmailTemplate(name, content) {
   `;
 }
 
-function ensureOwnershipOrAgent(job, req) {
-  const isAgent = req.user.role === 'agent';
-  const isOwner = String(job.client) === String(req.user.sub);
-  if (!isAgent && !isOwner) {
-    const err = new Error('Forbidden');
-    err.status = 403;
-    throw err;
-  }
-}
+const STAGE_LABEL = {
+  walkthrough: 'Walkthrough',
+  staging: 'Staging / Prep',
+  online_sale: 'Online Sale',
+  estate_sale: 'Estate Sale',
+  donations: 'Donations',
+  hauling: 'Hauling',
+  payout_processing: 'Payout Processing',
+  closing: 'Closing'
+};
 
-function getStageName(stage) {
-  const stageNames = {
-    walkthrough: 'Walkthrough',
-    staging: 'Staging',
-    online_sale: 'Online Sale',
-    estate_sale: 'Estate Sale',
-    donations: 'Donations',
-    hauling: 'Hauling',
-    payout_processing: 'Payout Processing',
-    closing: 'Closing',
-  };
-  return stageNames[stage] || stage;
+async function notifyClient(job, { stage, note, byUserName }) {
+  const clientEmail = job?.client?.email || job?.contactEmail;
+  const clientName = job?.client?.name || job?.contractSignor || 'there';
+  if (!clientEmail) return;
+
+  const stageLabel = STAGE_LABEL[stage] ?? stage;
+  const hasNote = !!(note && note.trim());
+
+  const subject = hasNote
+    ? `Update on ${stageLabel}: A new note was added`
+    : `Project Update: Status moved to ${stageLabel}`;
+
+  const content = hasNote
+    ? `
+      <p>Your project at <strong>${job.propertyAddress}</strong> has a new update on <strong>${stageLabel}</strong>.</p>
+      <div style="background:#f9f9f9;border-left:4px solid #e6c35a;padding:16px;border-radius:4px;margin:16px 0">
+        <p style="margin:0;white-space:pre-wrap">${note}</p>
+      </div>
+      ${byUserName ? `<p><em>Posted by ${byUserName}</em></p>` : ''}
+      <p>Visit your dashboard for details and next steps.</p>`
+    : `
+      <p>Your project at <strong>${job.propertyAddress}</strong> has moved to: <strong>${stageLabel}</strong>.</p>
+      <p>You can view the latest progress in your dashboard.</p>`;
+
+  await sendEmail({
+    to: clientEmail,
+    subject,
+    html: getEmailTemplate(clientName, content),
+    text: hasNote
+      ? `A new note was added on ${stageLabel} for your project at ${job.propertyAddress}:\n\n${note}`
+      : `Your project at ${job.propertyAddress} is now at: ${stageLabel}.`
+  });
 }
 
 exports.createJob = async (req, res) => {
@@ -151,39 +199,51 @@ exports.createJob = async (req, res) => {
       desiredCompletionDate: input.desiredCompletionDate
         ? new Date(input.desiredCompletionDate)
         : undefined,
+      status: 'awaiting_deposit',
     });
 
-    try {
-      const content = `
-        <div style="text-align: center; padding: 20px 0;">
-          <div style="display: inline-block; background-color: #e8f5e9; border-radius: 50%; width: 80px; height: 80px; line-height: 80px; margin-bottom: 20px;">
-            <span style="font-size: 40px;">🎉</span>
-          </div>
-        </div>
-        <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
-          Great news! Your project at <strong style="color: #e6c35a;">${input.propertyAddress}</strong> has been successfully created.
-        </p>
-        <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
-          <p style="font-size: 14px; line-height: 1.6; color: #555; margin: 0; font-family: Arial, sans-serif;">
-            <strong>Project Details:</strong><br/>
-            Location: ${input.propertyAddress}<br/>
-            Contact: ${input.contactEmail}<br/>
-            Phone: ${input.contactPhone}
-          </p>
-        </div>
-        <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
-          We're here to make this process smooth and stress-free. Our team will reach out shortly with next steps. If you have any questions, feel free to reach out anytime.
-        </p>
-      `;
+    const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@keptestate.com';
 
+    const adminContent = `
+      <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
+        A new client has just joined the Kept House platform!
+      </p>
+      <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 20px; margin: 20px 0; border-radius: 4px;">
+        <p style="font-size: 14px; line-height: 1.8; color: #333; margin: 0; font-family: Arial, sans-serif;">
+          <strong style="color: #101010;">Client Name:</strong> ${input.contractSignor}<br/>
+          <strong style="color: #101010;">Client Email:</strong> ${input.contactEmail}<br/>
+          <strong style="color: #101010;">Phone:</strong> ${input.contactPhone}<br/>
+          <strong style="color: #101010;">Property Address:</strong> ${input.propertyAddress}
+        </p>
+      </div>
+      <div style="background-color: #fff9e6; border-left: 4px solid #ffc107; padding: 20px; margin: 20px 0; border-radius: 4px;">
+        <p style="font-size: 14px; line-height: 1.6; color: #856404; margin: 0 0 10px 0; font-family: Arial, sans-serif;">
+          <strong>📋 To proceed with this project:</strong>
+        </p>
+        <p style="font-size: 14px; line-height: 1.6; color: #856404; margin: 0; font-family: Arial, sans-serif;">
+          Please login to your dashboard and search by client name <strong>${input.contractSignor}</strong> to locate the project.
+        </p>
+      </div>
+      <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 15px 0; font-family: Arial, sans-serif;">
+        <strong>Next Steps:</strong>
+      </p>
+      <ul style="font-size: 16px; line-height: 1.8; color: #333; margin: 0 0 25px 20px; font-family: Arial, sans-serif; padding: 0;">
+        <li style="margin-bottom: 8px;">Review the project details</li>
+        <li style="margin-bottom: 8px;">Set the service fee and deposit amount</li>
+        <li style="margin-bottom: 8px;">Send deposit request to client</li>
+        <li style="margin-bottom: 8px;">Send personal welcome email to the client</li>
+      </ul>
+    `;
+
+    try {
       await sendEmail({
-        to: input.contactEmail,
-        subject: 'Kept House — Your project has been created',
-        html: getEmailTemplate(input.contractSignor, content),
-        text: `Hi ${input.contractSignor}, Great news! Your project at ${input.propertyAddress} has been successfully created. We're here to make this process smooth and stress-free. Best regards, The Kept House Team`,
+        to: ADMIN_EMAIL,
+        subject: `New Client Registration: ${input.contractSignor}`,
+        html: getEmailTemplate('Admin', adminContent),
+        text: `New Client Registration - A new client has just joined the Kept House platform! Client Name: ${input.contractSignor}, Client Email: ${input.contactEmail}, Phone: ${input.contactPhone}, Property Address: ${input.propertyAddress}. To proceed with this project: Please login to your dashboard and search by client name ${input.contractSignor} to locate the project. Next Steps: Review the project details, Set the service fee and deposit amount, Send deposit request to client, Send personal welcome email to the client.`,
       });
     } catch (emailErr) {
-      console.error('Failed to send job creation email:', emailErr);
+      console.error('Failed to send admin notification:', emailErr);
     }
 
     res.status(201).json({ job });
@@ -193,12 +253,111 @@ exports.createJob = async (req, res) => {
   }
 };
 
+exports.requestDeposit = async (req, res) => {
+  try {
+    const input = requestDepositSchema.parse(req.body);
+    const job = await ClientJob.findById(req.params.id);
+
+    if (!job) return res.status(404).json({ message: 'Not found' });
+    if (req.user.role !== 'agent') return res.status(403).json({ message: 'Agents only' });
+
+    if (input.depositAmount > input.serviceFee) {
+      return res.status(400).json({ message: 'Deposit amount cannot exceed service fee' });
+    }
+
+    job.serviceFee = input.serviceFee;
+    job.depositAmount = input.depositAmount;
+    job.scopeNotes = input.scopeNotes || '';
+    job.status = 'awaiting_deposit';
+
+    await job.save();
+
+    res.json({
+      message: 'Deposit request sent',
+      job: {
+        _id: job._id,
+        serviceFee: job.serviceFee,
+        depositAmount: job.depositAmount,
+        scopeNotes: job.scopeNotes,
+        status: job.status
+      }
+    });
+  } catch (err) {
+    if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
+    res.status(err.status || 500).json({ message: err.message || 'Server error' });
+  }
+};
+
+exports.createDepositCheckout = async (req, res) => {
+  try {
+    const job = await ClientJob.findById(req.params.id).populate('client', 'email name');
+
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+
+    const isOwner = String(job.client._id) === String(req.user.sub);
+    if (!isOwner && req.user.role !== 'agent') {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    if (job.status !== 'awaiting_deposit') {
+      return res.status(400).json({ message: 'Deposit already paid or not requested' });
+    }
+
+    if (!job.serviceFee || job.serviceFee <= 0) {
+      return res.status(400).json({ message: 'Service fee not set. Agent must request deposit first.' });
+    }
+
+    if (!job.depositAmount || job.depositAmount <= 0) {
+      return res.status(400).json({ message: 'Deposit amount not set. Agent must request deposit first.' });
+    }
+
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: process.env.CURRENCY || 'usd',
+          product_data: {
+            name: `Initial Deposit - ${job.propertyAddress}`,
+            description: `Service Fee: $${job.serviceFee.toFixed(2)} | Deposit: $${job.depositAmount.toFixed(2)}`
+          },
+          unit_amount: Math.round(job.depositAmount * 100)
+        },
+        quantity: 1
+      }],
+      success_url: `${FRONTEND_URL}/client/project/${job._id}?payment=success`,
+      cancel_url: `${FRONTEND_URL}/client/project/${job._id}?payment=cancelled`,
+      customer_email: job.client.email || job.contactEmail,
+      metadata: {
+        jobId: String(job._id),
+        userId: String(job.client._id),
+        depositType: 'initial_deposit',
+        serviceFee: String(job.serviceFee),
+        depositAmount: String(job.depositAmount)
+      }
+    });
+
+    job.stripe = job.stripe || {};
+    job.stripe.sessionId = session.id;
+    await job.save();
+
+    res.json({ url: session.url, sessionId: session.id, jobId: String(job._id) });
+
+  } catch (err) {
+    console.error('Deposit checkout error:', err);
+    res.status(500).json({ message: 'Failed to create checkout session' });
+  }
+};
+
 exports.listJobs = async (req, res) => {
   try {
     const q = listQuerySchema.parse(req.query);
     const filter = {};
     if (req.user.role !== 'agent') filter.client = req.user.sub;
     if (q.stage) filter.stage = q.stage;
+    if (q.status) filter.status = q.status;
     if (q.q) {
       filter.$or = [
         { contractSignor: new RegExp(q.q, 'i') },
@@ -211,7 +370,7 @@ exports.listJobs = async (req, res) => {
     const jobs = await ClientJob.find(filter)
       .sort({ _id: -1 })
       .limit(q.limit + 1)
-      .select('contractSignor propertyAddress stage desiredCompletionDate createdAt finance');
+      .select('contractSignor propertyAddress stage status desiredCompletionDate createdAt finance serviceFee depositAmount depositPaidAt');
 
     let nextCursor = null;
     if (jobs.length > q.limit) {
@@ -237,81 +396,42 @@ exports.getJob = async (req, res) => {
   }
 };
 
-exports.updateStage = async (req, res) => {
+exports.updateProgress = async (req, res) => {
   try {
-    const { progressStage } = stageSchema.parse(req.body);
-    const job = await ClientJob.findById(req.params.id);
+    const body = z.object({
+      progressStage: stageEnum,
+      note: z.string().optional()
+    }).parse(req.body);
+
+    const job = await ClientJob.findById(req.params.id).populate('client', 'email name');
     if (!job) return res.status(404).json({ message: 'Not found' });
     if (req.user.role !== 'agent') return res.status(403).json({ message: 'Forbidden' });
-    
-    job.stage = progressStage;
-    await job.save();
-
-    try {
-      const stageName = getStageName(progressStage);
-
-      const stageIcons = {
-        walkthrough: '🚶',
-        staging: '🎬',
-        online_sale: '🛒',
-        estate_sale: '🏷️',
-        donations: '🤝',
-        hauling: '🚚',
-        payout_processing: '💰',
-        closing: '✅',
-      };
-      
-      const content = `
-        <div style="text-align: center; padding: 20px 0;">
-          <div style="display: inline-block; background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); border-radius: 50%; width: 80px; height: 80px; line-height: 80px; margin-bottom: 20px;">
-            <span style="font-size: 40px;">${stageIcons[progressStage] || '📋'}</span>
-          </div>
-        </div>
-        <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
-          Great progress! Your project at <strong style="color: #e6c35a;">${job.propertyAddress}</strong> has moved to a new stage.
-        </p>
-        <div style="background: linear-gradient(135deg, #f9f9f9 0%, #ffffff 100%); border: 2px solid #e6c35a; border-radius: 8px; padding: 25px; text-align: center; margin: 25px 0;">
-          <p style="font-size: 14px; color: #666; margin: 0 0 10px 0; font-family: Arial, sans-serif; text-transform: uppercase; letter-spacing: 1px;">
-            Current Stage
-          </p>
-          <h2 style="color: #e6c35a; font-family: Arial, sans-serif; font-size: 28px; margin: 0; font-weight: 600;">
-            ${stageName}
-          </h2>
-        </div>
-        <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
-          We'll keep you updated as things progress. If you have any questions about this stage, don't hesitate to reach out.
-        </p>
-      `;
-      
-      await sendEmail({
-        to: job.contactEmail,
-        subject: `Your project moved to ${stageName}`,
-        html: getEmailTemplate(job.contractSignor, content),
-        text: `Hi ${job.contractSignor}, Great progress! Your project at ${job.propertyAddress} has moved to the ${stageName} stage. We'll keep you updated as things progress. Best regards, The Kept House Team`,
-      });
-    } catch (emailErr) {
-      console.error('Failed to send stage update email:', emailErr);
+    if (job.status === 'awaiting_deposit') {
+      return res.status(400).json({ message: 'Cannot update stage before deposit is received' });
     }
 
-    res.json({ job: { _id: job._id, stage: job.stage, updatedAt: job.updatedAt } });
-  } catch (err) {
-    if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
-    res.status(500).json({ message: 'Server error' });
-  }
-};
-
-exports.addStageNote = async (req, res) => {
-  try {
-    const input = addNoteSchema.parse(req.body);
-    const job = await ClientJob.findById(req.params.id);
-    if (!job) return res.status(404).json({ message: 'Not found' });
-    ensureOwnershipOrAgent(job, req);
-    job.stageNotes.push({ stage: input.stage, note: input.note, by: req.user.sub });
+    job.stage = body.progressStage;
+    if (body.note?.trim()) {
+      job.stageNotes.push({ stage: body.progressStage, note: body.note.trim(), by: req.user.sub });
+    }
     await job.save();
-    res.status(201).json({ ok: true });
+
+    let byUserName;
+    if (req.user.role === 'agent') {
+      const agent = await User.findById(req.user.sub).select('name').lean();
+      byUserName = agent?.name;
+    }
+
+    await notifyClient(job, {
+      stage: body.progressStage,
+      note: body.note,
+      byUserName
+    });
+
+    res.json({ ok: true, job: { _id: job._id, stage: job.stage, updatedAt: job.updatedAt } });
   } catch (err) {
     if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
-    res.status(err.status || 500).json({ message: err.message || 'Server error' });
+    res.status(500).json({ message: err.message || 'Server error' });
   }
 };
 
@@ -325,10 +445,21 @@ exports.addDailySales = async (req, res) => {
     const job = await ClientJob.findById(req.params.id);
     if (!job) return res.status(404).json({ message: 'Not found' });
     if (req.user.role !== 'agent') return res.status(403).json({ message: 'Forbidden' });
+
     job.finance.daily.push({ label: input.label, amount: input.amount });
     job.finance.gross = (job.finance.gross || 0) + input.amount;
-    job.finance.net = (job.finance.gross || 0) - ((job.finance.fees || 0) + (job.finance.haulingCost || 0));
+
+    const keptHouseCommission = calculateKeptHouseCommission(job.finance.gross);
+    job.finance.fees = keptHouseCommission;
+
+    const serviceFee = (job.serviceFee && job.serviceFee > 0) ? job.serviceFee : 0;
+    const depositPaid = (job.depositAmount && job.depositAmount > 0 && job.depositPaidAt) ? job.depositAmount : 0;
+    const haulingCost = job.finance.haulingCost || 0;
+
+    job.finance.net = job.finance.gross - serviceFee - keptHouseCommission - haulingCost + depositPaid;
+
     await job.save();
+
     res.status(201).json({ finance: job.finance });
   } catch (err) {
     if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });

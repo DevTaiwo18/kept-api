@@ -3,68 +3,10 @@ const { z } = require('zod');
 const Item = require('../models/Item');
 const ClientJob = require('../models/ClientJob');
 const { User } = require('../models/User');
-const { sendEmail } = require('../utils/sendEmail');
 const cloudinary = require('../config/cloudinary');
 const openai = require('../config/openai');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function getEmailTemplate(name, content) {
-  return `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="margin: 0; padding: 0; background-color: #f4f4f4;">
-        <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px 0;">
-          <tr>
-            <td align="center">
-              <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                <tr>
-                  <td style="background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); padding: 30px 40px; text-align: center;">
-                    <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-family: Arial, sans-serif; font-weight: 600;">
-                      Kept House
-                    </h1>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding: 40px 40px 30px 40px;">
-                    <h2 style="color: #101010; margin: 0 0 20px 0; font-size: 22px; font-family: Arial, sans-serif; font-weight: 500;">
-                      Hi ${name},
-                    </h2>
-                    ${content}
-                  </td>
-                </tr>
-                <tr>
-                  <td style="background-color: #f9f9f9; padding: 25px 40px; border-top: 1px solid #e0e0e0;">
-                    <p style="font-size: 14px; line-height: 1.6; color: #666; margin: 0 0 10px 0; font-family: Arial, sans-serif;">
-                      Best regards,<br/>
-                      <strong style="color: #333;">The Kept House Team</strong>
-                    </p>
-                    <p style="font-size: 12px; line-height: 1.5; color: #999; margin: 15px 0 0 0; font-family: Arial, sans-serif;">
-                      If you have any questions, feel free to contact us at support@kepthouse.com
-                    </p>
-                  </td>
-                </tr>
-              </table>
-              <table width="600" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="padding: 20px; text-align: center;">
-                    <p style="font-size: 12px; color: #999; margin: 0; font-family: Arial, sans-serif;">
-                      © ${new Date().getFullYear()} Kept House. All rights reserved.
-                    </p>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-    </html>
-  `;
-}
 
 function transformCloudinaryUrl(u) {
   try {
@@ -133,30 +75,8 @@ async function aiAnalyzeSinglePhoto(url, prompt, maxRetries = 4) {
   throw lastErr || new Error('ai_analyze_failed');
 }
 
-const lastPhotoEmailSent = new Map();
-
-function shouldSendPhotoEmail(itemId, totalPhotos) {
-  const key = String(itemId);
-  const now = Date.now();
-  const lastSent = lastPhotoEmailSent.get(key);
-  
-  if (lastSent && (now - lastSent) < 3600000) {
-    return false;
-  }
-  
-  const milestones = [10, 20, 50];
-  if (milestones.includes(totalPhotos)) {
-    lastPhotoEmailSent.set(key, now);
-    return true;
-  }
-  
-  return false;
-}
-
 const createItemSchema = z.object({
   jobId: z.string(),
-  title: z.string().optional(),
-  description: z.string().optional(),
 });
 
 exports.createItem = async (req, res) => {
@@ -165,15 +85,21 @@ exports.createItem = async (req, res) => {
     const job = await ClientJob.findById(input.jobId).select('_id client');
     if (!job) return res.status(404).json({ message: 'Job not found' });
     if (req.user.role === 'client' && String(job.client) !== req.user.sub) return res.status(403).json({ message: 'Forbidden' });
+    
+    let item = await Item.findOne({ job: job._id });
+    
+    if (item) {
+      return res.status(200).json(item);
+    }
+    
     const doc = await Item.create({
       job: job._id,
       uploader: req.user.sub,
       uploaderRole: req.user.role,
-      title: input.title || '',
-      description: input.description || '',
       photos: [],
-      analyzedPhotoIndices: [],
-      status: req.user.role === 'agent' ? 'approved' : 'draft',
+      photoGroups: [],
+      analyzedGroupIndices: [],
+      status: 'draft',
     });
     res.status(201).json(doc);
   } catch (err) {
@@ -185,6 +111,7 @@ exports.createItem = async (req, res) => {
 exports.uploadPhotos = async (req, res) => {
   try {
     const { id } = req.params;
+    const { itemNumber } = req.body;
     const item = await Item.findById(id).populate('job', 'client accountManager propertyAddress contractSignor');
     if (!item) return res.status(404).json({ message: 'Item not found' });
     if (req.user.role === 'client' && String(item.job.client) !== req.user.sub) return res.status(403).json({ message: 'Forbidden' });
@@ -192,110 +119,101 @@ exports.uploadPhotos = async (req, res) => {
 
     const added = [];
     const failed = [];
-    const BATCH = 3;
 
-    for (let i = 0; i < req.files.length; i += BATCH) {
-      const slice = req.files.slice(i, i + BATCH);
-      const results = await Promise.allSettled(
-        slice.map(f =>
-          cloudinary.uploader.upload(f.path, {
-            folder: 'kept-house/items',
-            resource_type: 'image',
-            overwrite: false,
-            timeout: 120000,
-            chunk_size: 6000000,
-          })
-        )
-      );
+    for (let i = 0; i < req.files.length; i++) {
+      const file = req.files[i];
+      const original = file.originalname || 'unknown';
       
-      await Promise.allSettled(slice.map(f => fs.unlink(f.path).catch(() => {})));
-      
-      results.forEach((r, idx) => {
-        const original = slice[idx]?.originalname || 'unknown';
-        if (r.status === 'fulfilled') {
-          added.push(r.value.secure_url);
-        } else {
-          const error = r.reason;
-          console.error(`Failed to upload ${original}:`, error);
-          
-          let errorMsg = error?.message || 'upload failed';
-          if (error?.code === 'ENOTFOUND') {
-            errorMsg = 'Network error: Cannot reach Cloudinary servers. Please check your internet connection.';
-          } else if (error?.code === 'ETIMEDOUT') {
-            errorMsg = 'Upload timeout: Connection to Cloudinary timed out.';
-          } else if (error?.code === 'ECONNREFUSED') {
-            errorMsg = 'Connection refused: Cloudinary servers are not responding.';
-          } else if (error?.http_code === 401) {
-            errorMsg = 'Authentication error: Invalid Cloudinary credentials.';
-          } else if (error?.http_code === 403) {
-            errorMsg = 'Permission denied: Check your Cloudinary account settings.';
-          }
-          
-          failed.push({ 
-            file: original, 
-            reason: errorMsg,
-            code: error?.code,
-            httpCode: error?.http_code
-          });
+      try {
+        const result = await cloudinary.uploader.upload(file.path, {
+          folder: 'kept-house/items',
+          resource_type: 'image',
+          overwrite: false,
+          timeout: 120000,
+          chunk_size: 6000000,
+        });
+        
+        added.push(result.secure_url);
+        
+        await fs.unlink(file.path).catch(() => {});
+        
+        if (i < req.files.length - 1) {
+          await sleep(200);
         }
-      });
+        
+      } catch (error) {
+        console.error(`Failed to upload ${original}:`, error);
+        
+        await fs.unlink(file.path).catch(() => {});
+        
+        let errorMsg = error?.message || 'upload failed';
+        if (error?.code === 'ENOTFOUND') {
+          errorMsg = 'Network error: Cannot reach Cloudinary servers. Please check your internet connection.';
+        } else if (error?.code === 'ETIMEDOUT') {
+          errorMsg = 'Upload timeout: Connection to Cloudinary timed out.';
+        } else if (error?.code === 'ECONNREFUSED') {
+          errorMsg = 'Connection refused: Cloudinary servers are not responding.';
+        } else if (error?.http_code === 401) {
+          errorMsg = 'Authentication error: Invalid Cloudinary credentials.';
+        } else if (error?.http_code === 403) {
+          errorMsg = 'Permission denied: Check your Cloudinary account settings.';
+        } else if (error?.http_code === 420 || error?.http_code === 429) {
+          errorMsg = 'Rate limit exceeded. Please try uploading fewer files at once.';
+        }
+        
+        failed.push({ 
+          file: original, 
+          reason: errorMsg,
+          code: error?.code,
+          httpCode: error?.http_code
+        });
+      }
     }
 
     if (added.length) {
-      item.photos.push(...added);
+      if (itemNumber) {
+        const existingGroup = item.photoGroups.find(g => g.itemNumber === parseInt(itemNumber));
+        
+        if (existingGroup) {
+          const startIndex = item.photos.length;
+          item.photos.push(...added);
+          existingGroup.endIndex = item.photos.length - 1;
+          existingGroup.photoCount += added.length;
+        } else {
+          return res.status(404).json({ message: 'Item number not found' });
+        }
+      } else {
+        const startIndex = item.photos.length;
+        item.photos.push(...added);
+        const endIndex = item.photos.length - 1;
+        
+        const nextItemNumber = item.photoGroups.length + 1;
+        
+        item.photoGroups.push({
+          itemNumber: nextItemNumber,
+          title: `Item ${nextItemNumber}`,
+          startIndex: startIndex,
+          endIndex: endIndex,
+          photoCount: added.length
+        });
+      }
       
       if (req.user.role === 'agent' && item.status === 'approved') {
         item.status = 'needs_review';
       }
       
       await item.save();
-
-      setImmediate(async () => {
-        try {
-          const totalPhotos = item.photos.length;
-          
-          if (shouldSendPhotoEmail(item._id, totalPhotos)) {
-            const itemTitle = item.title || `Item at ${item.job?.propertyAddress || 'property'}`;
-            
-            const content = `
-              <div style="text-align: center; padding: 20px 0;">
-                <div style="display: inline-block; background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); border-radius: 50%; width: 80px; height: 80px; line-height: 80px; margin-bottom: 20px;">
-                  <span style="font-size: 40px;">📸</span>
-                </div>
-              </div>
-              <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
-                New photos have been uploaded and are ready for your review.
-              </p>
-              <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
-                <p style="font-size: 14px; line-height: 1.6; color: #555; margin: 0; font-family: Arial, sans-serif;">
-                  <strong>Item:</strong> ${itemTitle}<br/>
-                  <strong>New Photos:</strong> ${added.length}<br/>
-                  <strong>Total Photos:</strong> ${totalPhotos}
-                </p>
-              </div>
-              <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
-                Please review these photos when you get a chance and approve or request changes as needed.
-              </p>
-            `;
-
-            await sendEmail({
-              to: 'Admin@keptestate.com',
-              subject: 'New item photos ready for review',
-              html: getEmailTemplate('Admin', content),
-              text: `Hi Admin, New photos (${added.length}) have been uploaded to item ${itemTitle}. Total photos: ${totalPhotos}. Please review when ready. Best regards, The Kept House Team`,
-            });
-          }
-        } catch (emailErr) {
-          console.error('Failed to send photo upload email:', emailErr);
-        }
-      });
     }
+
+    const finalPhotoCount = item.photos.length;
 
     res.status(failed.length && !added.length ? 502 : 200).json({
       uploaded: added.length,
       failed: failed.length,
       photos: item.photos,
+      photoGroups: item.photoGroups,
       status: item.status,
+      photoCount: finalPhotoCount,
       errors: failed.length > 0 ? failed : undefined,
     });
   } catch (err) {
@@ -307,52 +225,82 @@ exports.uploadPhotos = async (req, res) => {
 exports.analyzeWithAI = async (req, res) => {
   try {
     const { id } = req.params;
+    const { itemNumber } = req.body;
     const item = await Item.findById(id).populate('job', 'client accountManager');
     if (!item) return res.status(404).json({ message: 'Item not found' });
     if (req.user.role === 'client' && String(item.job.client) !== req.user.sub) return res.status(403).json({ message: 'Forbidden' });
-    if (!item.photos.length) return res.status(400).json({ message: 'No photos to analyze' });
+    
+    if (!item.photoGroups || item.photoGroups.length === 0) {
+      return res.status(400).json({ message: 'No photo groups to analyze' });
+    }
 
     const catList = ['Furniture','Tools','Jewelry','Art','Electronics','Outdoor','Appliances','Kitchen','Collectibles','Books/Media','Clothing','Misc'];
-    const prompt =
-      `You are helping catalog estate-sale items.\n` +
-      `Analyze this single image and return strict JSON with keys: title, description, category, priceLow, priceHigh, confidence (0-1).\n` +
-      `Category must be one of: ${catList.join(', ')}.\n` +
-      `Be concise. No extra fields. If uncertain, category "Misc" with lower confidence.`;
-
-    const analyzedIndices = new Set(item.analyzedPhotoIndices || []);
     
-    const photosToAnalyze = item.photos
-      .map((photo, index) => ({ photo, index }))
-      .filter(({ index }) => !analyzedIndices.has(index));
+    const analyzedGroups = new Set(item.analyzedGroupIndices || []);
+    
+    let groupsToAnalyze;
+    
+    if (itemNumber) {
+      const photoGroup = item.photoGroups.find(g => g.itemNumber === parseInt(itemNumber));
+      if (!photoGroup) {
+        return res.status(404).json({ message: 'Item number not found' });
+      }
+      
+      if (analyzedGroups.has(photoGroup.itemNumber)) {
+        return res.status(400).json({ message: 'This item group has already been analyzed' });
+      }
+      
+      groupsToAnalyze = [photoGroup];
+    } else {
+      groupsToAnalyze = item.photoGroups.filter(g => !analyzedGroups.has(g.itemNumber));
+    }
 
-    if (!photosToAnalyze.length) {
-      return res.status(400).json({ message: 'All photos already analyzed' });
+    if (!groupsToAnalyze.length) {
+      return res.status(400).json({ message: 'All photo groups already analyzed' });
     }
 
     const aiResults = [];
-    for (const { photo, index } of photosToAnalyze) {
+    
+    for (const group of groupsToAnalyze) {
+      const groupPhotos = item.photos.slice(group.startIndex, group.endIndex + 1);
+      
+      if (groupPhotos.length === 0) continue;
+
+      const firstPhoto = groupPhotos[0];
+      
+      const prompt =
+        `You are helping catalog estate-sale items.\n` +
+        `This item has ${groupPhotos.length} photo(s). Analyze the first photo and return strict JSON with keys: title, description, category, priceLow, priceHigh, confidence (0-1).\n` +
+        `Category must be one of: ${catList.join(', ')}.\n` +
+        `Be concise. No extra fields. If uncertain, category "Misc" with lower confidence.`;
+
       try {
-        const parsed = await aiAnalyzeSinglePhoto(photo, prompt);
+        const parsed = await aiAnalyzeSinglePhoto(firstPhoto, prompt);
         if (!catList.includes(parsed.category)) parsed.category = 'Misc';
+        
         aiResults.push({
-          photoIndex: index,
-          photoUrl: photo,
-          title: parsed.title || '',
+          itemNumber: group.itemNumber,
+          photoIndices: Array.from({ length: groupPhotos.length }, (_, i) => group.startIndex + i),
+          title: parsed.title || group.title || `Item ${group.itemNumber}`,
           description: parsed.description || '',
           category: parsed.category,
           priceLow: Number(parsed.priceLow) || 0,
           priceHigh: Number(parsed.priceHigh) || 0,
           confidence: Number(parsed.confidence) || 0,
         });
-        analyzedIndices.add(index);
-      } catch {}
+        
+        analyzedGroups.add(group.itemNumber);
+      } catch (err) {
+        console.error(`Failed to analyze group ${group.itemNumber}:`, err);
+      }
+      
       await sleep(500);
     }
 
-    if (!aiResults.length) return res.status(502).json({ message: 'Failed to analyze new photos' });
+    if (!aiResults.length) return res.status(502).json({ message: 'Failed to analyze photo groups' });
 
     item.ai = [...(item.ai || []), ...aiResults];
-    item.analyzedPhotoIndices = Array.from(analyzedIndices);
+    item.analyzedGroupIndices = Array.from(analyzedGroups);
     
     await item.save();
 
@@ -363,6 +311,7 @@ exports.analyzeWithAI = async (req, res) => {
       newAnalysis: aiResults 
     });
   } catch (err) {
+    console.error('AI analysis error:', err);
     res.status(500).json({ message: 'AI analysis failed' });
   }
 };
@@ -377,7 +326,8 @@ exports.approveItem = async (req, res) => {
     if (!items || !Array.isArray(items) || items.length === 0) return res.status(400).json({ message: 'No items to approve' });
 
     const newApprovedItems = items.map(itm => ({
-      photoIndex: itm.photoIndex,
+      itemNumber: itm.itemNumber,
+      photoIndices: itm.photoIndices || [],
       title: itm.title,
       description: itm.description,
       category: itm.category,
@@ -394,42 +344,6 @@ exports.approveItem = async (req, res) => {
 
     item.status = 'approved';
     await item.save();
-
-    try {
-      const clientEmail = item.job.contactEmail;
-      const clientName = item.job.contractSignor;
-      
-      if (clientEmail) {
-        const content = `
-          <div style="text-align: center; padding: 20px 0;">
-            <div style="display: inline-block; background-color: #e8f5e9; border-radius: 50%; width: 80px; height: 80px; line-height: 80px; margin-bottom: 20px;">
-              <span style="font-size: 40px;">✅</span>
-            </div>
-          </div>
-          <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
-            Great news! <strong style="color: #e6c35a;">${item.title || 'An item'}</strong> in your project has been approved and is moving forward.
-          </p>
-          <div style="background-color: #e8f5e9; border-left: 4px solid #4caf50; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
-            <p style="font-size: 14px; line-height: 1.6; color: #2e7d32; margin: 0; font-family: Arial, sans-serif;">
-              ✓ <strong>Status:</strong> Approved<br/>
-              ✓ <strong>Items Approved:</strong> ${newApprovedItems.length}
-            </p>
-          </div>
-          <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
-            Your project is progressing smoothly. We'll keep you updated with any further developments.
-          </p>
-        `;
-
-        await sendEmail({
-          to: clientEmail,
-          subject: 'An item in your project was approved',
-          html: getEmailTemplate(clientName, content),
-          text: `Hi ${clientName}, Good news! ${item.title || 'An item'} in your project has been approved and is moving forward. Best regards, The Kept House Team`,
-        });
-      }
-    } catch (emailErr) {
-      console.error('Failed to send item approval email:', emailErr);
-    }
     
     res.json({
       status: item.status,
@@ -438,6 +352,7 @@ exports.approveItem = async (req, res) => {
       approvedItems: item.approvedItems
     });
   } catch (err) {
+    console.error('Approve error:', err);
     res.status(500).json({ message: 'Approve failed' });
   }
 };

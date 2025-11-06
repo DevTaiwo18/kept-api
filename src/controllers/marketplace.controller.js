@@ -4,7 +4,7 @@ function computeDisplayPrice(item) {
   if (typeof item.price === 'number' && !Number.isNaN(item.price)) {
     return item.price;
   }
-  
+
   const low = item.priceLow ?? 0;
   const high = item.priceHigh ?? 0;
   if (low && high) return Math.round((low + high) / 2);
@@ -26,43 +26,49 @@ exports.listItems = async (req, res) => {
     const min = req.query.min ? Number(req.query.min) : null;
     const max = req.query.max ? Number(req.query.max) : null;
 
-    const base = { 
-      status: 'approved', 
-      approvedItems: { $exists: true, $ne: [] } 
+    const base = {
+      status: 'approved',
+      approvedItems: { $exists: true, $ne: [] }
     };
-    
+
     if (jobId) base.job = jobId;
 
     const docs = await Item.find(base).sort({ createdAt: -1 }).lean();
 
     let allListings = [];
-    
+
     docs.forEach(doc => {
       if (!doc.approvedItems || !doc.approvedItems.length) return;
-      
-      const soldIndices = doc.soldPhotoIndices || [];
-      
+
+      const soldIndices = new Set(doc.soldPhotoIndices || []);
+
       doc.approvedItems.forEach(approvedItem => {
-        if (soldIndices.includes(approvedItem.photoIndex)) return;
-        
-        const photoUrl = doc.photos[approvedItem.photoIndex];
-        if (!photoUrl) return;
-        
+        const photoIndices = approvedItem.photoIndices || [approvedItem.photoIndex];
+
+        const isSold = photoIndices.some(idx => soldIndices.has(idx));
+        if (isSold) return;
+
+        const photos = photoIndices.map(idx => doc.photos[idx]).filter(Boolean);
+        if (photos.length === 0) return;
+
         const listing = {
-          _id: `${doc._id}_${approvedItem.photoIndex}`,
+          _id: `${doc._id}_${approvedItem.itemNumber}`,
           itemId: doc._id,
-          photoIndex: approvedItem.photoIndex,
+          itemNumber: approvedItem.itemNumber,
+          photoIndices: photoIndices,
           title: approvedItem.title || '',
           description: approvedItem.description || '',
           category: approvedItem.category || 'Misc',
           price: computeDisplayPrice(approvedItem),
           priceLow: approvedItem.priceLow ?? null,
           priceHigh: approvedItem.priceHigh ?? null,
-          photo: photoUrl,
+          photo: photos[0],
+          photos: photos,
+          allPhotos: doc.photos,
           job: doc.job,
           createdAt: doc.createdAt
         };
-        
+
         allListings.push(listing);
       });
     });
@@ -70,14 +76,14 @@ exports.listItems = async (req, res) => {
     let filtered = allListings;
 
     if (category) {
-      filtered = filtered.filter(item => 
+      filtered = filtered.filter(item =>
         item.category.toLowerCase() === category.toLowerCase()
       );
     }
 
     if (q) {
       const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      filtered = filtered.filter(item => 
+      filtered = filtered.filter(item =>
         rx.test(item.title) || rx.test(item.description)
       );
     }
@@ -119,68 +125,77 @@ exports.getItem = async (req, res) => {
   try {
     const parts = req.params.id.split('_');
     const itemId = parts[0];
-    const photoIndex = parts.length > 1 ? parseInt(parts[1], 10) : null;
+    const itemNumber = parts.length > 1 ? parseInt(parts[1], 10) : null;
 
     const doc = await Item.findOne({ _id: itemId, status: 'approved' }).lean();
     if (!doc) return res.status(404).json({ message: 'Item not found' });
 
-    const soldIndices = doc.soldPhotoIndices || [];
+    const soldIndices = new Set(doc.soldPhotoIndices || []);
 
-    if (photoIndex !== null) {
-      if (soldIndices.includes(photoIndex)) {
-        return res.status(404).json({ message: 'Item is no longer available' });
-      }
-
+    if (itemNumber !== null) {
       const approvedItem = doc.approvedItems?.find(
-        item => item.photoIndex === photoIndex
+        item => item.itemNumber === itemNumber
       );
-      
+
       if (!approvedItem) {
         return res.status(404).json({ message: 'Approved item not found' });
       }
 
-      const photoUrl = doc.photos[approvedItem.photoIndex];
-      
+      const photoIndices = approvedItem.photoIndices || [approvedItem.photoIndex];
+      const isSold = photoIndices.some(idx => soldIndices.has(idx));
+
+      if (isSold) {
+        return res.status(404).json({ message: 'Item is no longer available' });
+      }
+
+      const photos = photoIndices.map(idx => doc.photos[idx]).filter(Boolean);
+
       return res.json({
-        _id: `${doc._id}_${photoIndex}`,
+        _id: `${doc._id}_${itemNumber}`,
         itemId: doc._id,
-        photoIndex: approvedItem.photoIndex,
+        itemNumber: approvedItem.itemNumber,
+        photoIndices: photoIndices,
         title: approvedItem.title || '',
         description: approvedItem.description || '',
         category: approvedItem.category || 'Misc',
         price: computeDisplayPrice(approvedItem),
         priceLow: approvedItem.priceLow ?? null,
         priceHigh: approvedItem.priceHigh ?? null,
-        photo: photoUrl,
-        photos: [photoUrl],
+        photo: photos[0],
+        photos: photos,
+        allPhotos: doc.photos,
         job: doc.job,
         createdAt: doc.createdAt
       });
     }
 
     if (doc.approvedItems && doc.approvedItems.length > 0) {
-      const firstAvailable = doc.approvedItems.find(
-        item => !soldIndices.includes(item.photoIndex)
-      );
+      const firstAvailable = doc.approvedItems.find(item => {
+        const photoIndices = item.photoIndices || [item.photoIndex];
+        return !photoIndices.some(idx => soldIndices.has(idx));
+      });
 
       if (!firstAvailable) {
         return res.status(404).json({ message: 'No items available' });
       }
 
-      const photoUrl = doc.photos[firstAvailable.photoIndex];
-      
+      const photoIndices = firstAvailable.photoIndices || [firstAvailable.photoIndex];
+      const photos = photoIndices.map(idx => doc.photos[idx]).filter(Boolean);
+
       return res.json({
-        _id: `${doc._id}_${firstAvailable.photoIndex}`,
+        _id: `${doc._id}_${firstAvailable.itemNumber}`,
         itemId: doc._id,
-        photoIndex: firstAvailable.photoIndex,
+        itemNumber: firstAvailable.itemNumber,
+        photoIndices: photoIndices,
         title: firstAvailable.title || '',
         description: firstAvailable.description || '',
         category: firstAvailable.category || 'Misc',
         price: computeDisplayPrice(firstAvailable),
         priceLow: firstAvailable.priceLow ?? null,
         priceHigh: firstAvailable.priceHigh ?? null,
-        photo: photoUrl,
-        photos: [photoUrl],
+        photo: photos[0],
+        photos: photos,
+        allPhotos: doc.photos,
         job: doc.job,
         createdAt: doc.createdAt
       });
@@ -197,53 +212,78 @@ exports.getRelated = async (req, res) => {
   try {
     const parts = req.params.id.split('_');
     const itemId = parts[0];
-    const photoIndex = parts.length > 1 ? parseInt(parts[1], 10) : null;
+    const itemNumber = parts.length > 1 ? parseInt(parts[1], 10) : null;
 
     const current = await Item.findOne({ _id: itemId, status: 'approved' }).lean();
     if (!current) return res.status(404).json({ message: 'Item not found' });
 
     let targetCategory = null;
-    if (photoIndex !== null && current.approvedItems) {
+    if (itemNumber !== null && current.approvedItems) {
       const approvedItem = current.approvedItems.find(
-        item => item.photoIndex === photoIndex
+        item => item.itemNumber === itemNumber
       );
       targetCategory = approvedItem?.category;
     }
 
-    const base = { 
-      status: 'approved', 
+    const base = {
+      status: 'approved',
       approvedItems: { $exists: true, $ne: [] },
       _id: { $ne: current._id }
     };
 
-    const docs = await Item.find(base).sort({ createdAt: -1 }).limit(20).lean();
+    const docs = await Item.find(base).sort({ createdAt: -1 }).limit(50).lean();
 
-    let relatedListings = [];
-    
+    let categoryMatches = [];
+    let otherItems = [];
+
     docs.forEach(doc => {
       if (!doc.approvedItems) return;
-      
-      const soldIndices = doc.soldPhotoIndices || [];
-      
+
+      const soldIndices = new Set(doc.soldPhotoIndices || []);
+
       doc.approvedItems.forEach(approvedItem => {
-        if (soldIndices.includes(approvedItem.photoIndex)) return;
-        
-        if (targetCategory && approvedItem.category !== targetCategory) return;
-        
-        const photoUrl = doc.photos[approvedItem.photoIndex];
-        if (!photoUrl) return;
-        
-        relatedListings.push({
-          _id: `${doc._id}_${approvedItem.photoIndex}`,
+        const photoIndices = approvedItem.photoIndices || [approvedItem.photoIndex];
+        const isSold = photoIndices.some(idx => soldIndices.has(idx));
+
+        if (isSold) return;
+
+        const photos = photoIndices.map(idx => doc.photos[idx]).filter(Boolean);
+        if (photos.length === 0) return;
+
+        const listing = {
+          _id: `${doc._id}_${approvedItem.itemNumber}`,
+          itemId: doc._id,
+          itemNumber: approvedItem.itemNumber,
+          photoIndices: photoIndices,
           title: approvedItem.title || '',
           category: approvedItem.category || 'Misc',
+          description: approvedItem.description || '',
           price: computeDisplayPrice(approvedItem),
-          photo: photoUrl
-        });
+          photo: photos[0],
+          photos: photos,
+          allPhotos: doc.photos
+        };
+
+        if (targetCategory && approvedItem.category === targetCategory) {
+          categoryMatches.push(listing);
+        } else {
+          otherItems.push(listing);
+        }
       });
     });
 
-    relatedListings = relatedListings.slice(0, 12);
+    let relatedListings = [];
+
+    if (targetCategory && categoryMatches.length > 0) {
+      relatedListings = categoryMatches.slice(0, 12);
+
+      if (relatedListings.length < 12) {
+        const needed = 12 - relatedListings.length;
+        relatedListings = [...relatedListings, ...otherItems.slice(0, needed)];
+      }
+    } else {
+      relatedListings = otherItems.slice(0, 12);
+    }
 
     res.json({ items: relatedListings });
   } catch (err) {
@@ -255,7 +295,7 @@ exports.getRelated = async (req, res) => {
 exports.searchItems = async (req, res) => {
   try {
     const q = req.query.q?.trim();
-    
+
     if (!q) {
       return res.status(400).json({ message: 'Search query required' });
     }
@@ -269,9 +309,9 @@ exports.searchItems = async (req, res) => {
     const min = req.query.min ? Number(req.query.min) : null;
     const max = req.query.max ? Number(req.query.max) : null;
 
-    const base = { 
-      status: 'approved', 
-      approvedItems: { $exists: true, $ne: [] } 
+    const base = {
+      status: 'approved',
+      approvedItems: { $exists: true, $ne: [] }
     };
 
     const docs = await Item.find(base).lean();
@@ -279,50 +319,56 @@ exports.searchItems = async (req, res) => {
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
     let searchResults = [];
-    
+
     docs.forEach(doc => {
       if (!doc.approvedItems || !doc.approvedItems.length) return;
-      
-      const soldIndices = doc.soldPhotoIndices || [];
-      
+
+      const soldIndices = new Set(doc.soldPhotoIndices || []);
+
       doc.approvedItems.forEach(approvedItem => {
-        if (soldIndices.includes(approvedItem.photoIndex)) return;
-        
+        const photoIndices = approvedItem.photoIndices || [approvedItem.photoIndex];
+        const isSold = photoIndices.some(idx => soldIndices.has(idx));
+
+        if (isSold) return;
+
         const titleMatch = rx.test(approvedItem.title || '');
         const descMatch = rx.test(approvedItem.description || '');
-        
+
         if (!titleMatch && !descMatch) return;
-        
-        const photoUrl = doc.photos[approvedItem.photoIndex];
-        if (!photoUrl) return;
-        
+
+        const photos = photoIndices.map(idx => doc.photos[idx]).filter(Boolean);
+        if (photos.length === 0) return;
+
         let relevanceScore = 0;
         const titleLower = (approvedItem.title || '').toLowerCase();
         const descLower = (approvedItem.description || '').toLowerCase();
         const queryLower = q.toLowerCase();
-        
+
         if (titleLower === queryLower) relevanceScore += 100;
         else if (titleLower.startsWith(queryLower)) relevanceScore += 50;
         else if (titleMatch) relevanceScore += 25;
-        
+
         if (descMatch) relevanceScore += 10;
-        
+
         const listing = {
-          _id: `${doc._id}_${approvedItem.photoIndex}`,
+          _id: `${doc._id}_${approvedItem.itemNumber}`,
           itemId: doc._id,
-          photoIndex: approvedItem.photoIndex,
+          itemNumber: approvedItem.itemNumber,
+          photoIndices: photoIndices,
           title: approvedItem.title || '',
           description: approvedItem.description || '',
           category: approvedItem.category || 'Misc',
           price: computeDisplayPrice(approvedItem),
           priceLow: approvedItem.priceLow ?? null,
           priceHigh: approvedItem.priceHigh ?? null,
-          photo: photoUrl,
+          photo: photos[0],
+          photos: photos,
+          allPhotos: doc.photos,
           job: doc.job,
           createdAt: doc.createdAt,
           relevanceScore
         };
-        
+
         searchResults.push(listing);
       });
     });
@@ -330,7 +376,7 @@ exports.searchItems = async (req, res) => {
     let filtered = searchResults;
 
     if (category) {
-      filtered = filtered.filter(item => 
+      filtered = filtered.filter(item =>
         item.category.toLowerCase() === category.toLowerCase()
       );
     }
