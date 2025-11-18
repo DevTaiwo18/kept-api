@@ -6,7 +6,7 @@ const { sendEmail } = require('../utils/sendEmail');
 
 function calculateKeptHouseCommission(grossSales) {
   let commission = 0;
-  
+
   if (grossSales <= 7500) {
     commission = grossSales * 0.50;
   } else if (grossSales <= 20000) {
@@ -14,7 +14,7 @@ function calculateKeptHouseCommission(grossSales) {
   } else {
     commission = (7500 * 0.50) + (12500 * 0.40) + ((grossSales - 20000) * 0.30);
   }
-  
+
   return Math.round(commission * 100) / 100;
 }
 
@@ -44,6 +44,16 @@ const createJobSchema = z.object({
     property: z.string().optional(),
   }).partial().optional(),
   marketingPhotos: z.array(z.string().url()).optional(),
+});
+
+const uploadContractSchema = z.object({
+  contractFileUrl: z.string().url(),
+});
+
+const signContractSchema = z.object({
+  signatureDataUrl: z.string().refine((val) => val.startsWith('data:image'), {
+    message: 'Invalid signature data format'
+  }),
 });
 
 const requestDepositSchema = z.object({
@@ -182,6 +192,43 @@ async function notifyClient(job, { stage, note, byUserName }) {
   });
 }
 
+async function notifyAgentContractSigned(job) {
+  const agentEmail = process.env.ADMIN_EMAIL || 'admin@keptestate.com';
+  const clientName = job?.client?.name || job?.contractSignor || 'Client';
+
+  const content = `
+    <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
+      Great news! <strong>${clientName}</strong> has signed the contract for their project.
+    </p>
+    <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 20px; margin: 20px 0; border-radius: 4px;">
+      <p style="font-size: 14px; line-height: 1.8; color: #333; margin: 0; font-family: Arial, sans-serif;">
+        <strong style="color: #101010;">Client Name:</strong> ${clientName}<br/>
+        <strong style="color: #101010;">Property Address:</strong> ${job.propertyAddress}<br/>
+        <strong style="color: #101010;">Signed At:</strong> ${new Date(job.contractSignedAt).toLocaleString()}
+      </p>
+    </div>
+    <div style="background-color: #e8f5e9; border-left: 4px solid #4caf50; padding: 20px; margin: 20px 0; border-radius: 4px;">
+      <p style="font-size: 14px; line-height: 1.6; color: #2e7d32; margin: 0 0 10px 0; font-family: Arial, sans-serif;">
+        <strong>✅ Next Step:</strong>
+      </p>
+      <p style="font-size: 14px; line-height: 1.6; color: #2e7d32; margin: 0; font-family: Arial, sans-serif;">
+        You can now request the initial deposit. Login to the dashboard to set the service fee and deposit amount.
+      </p>
+    </div>
+  `;
+
+  try {
+    await sendEmail({
+      to: agentEmail,
+      subject: `Contract Signed: ${clientName} - ${job.propertyAddress}`,
+      html: getEmailTemplate('Agent', content),
+      text: `Contract Signed! ${clientName} has signed the contract for their project at ${job.propertyAddress}. Signed at: ${new Date(job.contractSignedAt).toLocaleString()}. Next Step: You can now request the initial deposit. Login to the dashboard to set the service fee and deposit amount.`
+    });
+  } catch (emailErr) {
+    console.error('Failed to send agent notification:', emailErr);
+  }
+}
+
 exports.createJob = async (req, res) => {
   try {
     const input = createJobSchema.parse(req.body);
@@ -229,9 +276,10 @@ exports.createJob = async (req, res) => {
       </p>
       <ul style="font-size: 16px; line-height: 1.8; color: #333; margin: 0 0 25px 20px; font-family: Arial, sans-serif; padding: 0;">
         <li style="margin-bottom: 8px;">Review the project details</li>
-        <li style="margin-bottom: 8px;">Set the service fee and deposit amount</li>
+        <li style="margin-bottom: 8px;">Send personalized welcome email with contract agreement</li>
+        <li style="margin-bottom: 8px;">Wait for client to sign and return contract</li>
+        <li style="margin-bottom: 8px;">Set service fee and deposit amount</li>
         <li style="margin-bottom: 8px;">Send deposit request to client</li>
-        <li style="margin-bottom: 8px;">Send personal welcome email to the client</li>
       </ul>
     `;
 
@@ -240,7 +288,7 @@ exports.createJob = async (req, res) => {
         to: ADMIN_EMAIL,
         subject: `New Client Registration: ${input.contractSignor}`,
         html: getEmailTemplate('Admin', adminContent),
-        text: `New Client Registration - A new client has just joined the Kept House platform! Client Name: ${input.contractSignor}, Client Email: ${input.contactEmail}, Phone: ${input.contactPhone}, Property Address: ${input.propertyAddress}. To proceed with this project: Please login to your dashboard and search by client name ${input.contractSignor} to locate the project. Next Steps: Review the project details, Set the service fee and deposit amount, Send deposit request to client, Send personal welcome email to the client.`,
+        text: `New Client Registration - A new client has just joined the Kept House platform! Client Name: ${input.contractSignor}, Client Email: ${input.contactEmail}, Phone: ${input.contactPhone}, Property Address: ${input.propertyAddress}. To proceed with this project: Please login to your dashboard and search by client name ${input.contractSignor} to locate the project. Next Steps: Review the project details, Upload the contract agreement, Send personalized welcome email with contract, Wait for client to sign and return contract, Set service fee and deposit amount, Send deposit request to client.`,
       });
     } catch (emailErr) {
       console.error('Failed to send admin notification:', emailErr);
@@ -253,6 +301,76 @@ exports.createJob = async (req, res) => {
   }
 };
 
+exports.uploadContract = async (req, res) => {
+  try {
+    if (req.user.role !== 'agent') {
+      return res.status(403).json({ message: 'Agents only' });
+    }
+
+    const { contractFileUrl } = uploadContractSchema.parse(req.body);
+    const job = await ClientJob.findById(req.params.id);
+
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+
+    job.contractFileUrl = contractFileUrl;
+    job.contractUploadedAt = new Date();
+    await job.save();
+
+    res.json({
+      success: true,
+      message: 'Contract uploaded successfully',
+      job: {
+        _id: job._id,
+        contractFileUrl: job.contractFileUrl,
+        contractUploadedAt: job.contractUploadedAt,
+      }
+    });
+  } catch (err) {
+    if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
+    res.status(500).json({ message: err.message || 'Server error' });
+  }
+};
+
+exports.signContract = async (req, res) => {
+  try {
+    const job = await ClientJob.findById(req.params.id).populate('client', 'name email');
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+
+    const isOwner = String(job.client._id) === String(req.user.sub);
+    if (!isOwner) return res.status(403).json({ message: 'Forbidden' });
+
+    if (!job.contractFileUrl) {
+      return res.status(400).json({ message: 'No contract available to sign' });
+    }
+
+    if (job.contractSignedByClient) {
+      return res.status(400).json({ message: 'Contract already signed' });
+    }
+
+    const { signatureDataUrl } = signContractSchema.parse(req.body);
+
+    job.contractSignedByClient = true;
+    job.contractSignatureImage = signatureDataUrl;
+    job.contractSignedAt = new Date();
+    await job.save();
+
+    await notifyAgentContractSigned(job);
+
+    res.json({
+      success: true,
+      message: 'Contract signed successfully',
+      job: {
+        _id: job._id,
+        contractSignedByClient: job.contractSignedByClient,
+        contractSignedAt: job.contractSignedAt,
+      }
+    });
+  } catch (err) {
+    if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
+    res.status(500).json({ message: err.message || 'Server error' });
+  }
+};
+
 exports.requestDeposit = async (req, res) => {
   try {
     const input = requestDepositSchema.parse(req.body);
@@ -260,6 +378,10 @@ exports.requestDeposit = async (req, res) => {
 
     if (!job) return res.status(404).json({ message: 'Not found' });
     if (req.user.role !== 'agent') return res.status(403).json({ message: 'Agents only' });
+
+    if (!job.contractSignedByClient) {
+      return res.status(400).json({ message: 'Client must sign and return contract before requesting deposit' });
+    }
 
     if (input.depositAmount > input.serviceFee) {
       return res.status(400).json({ message: 'Deposit amount cannot exceed service fee' });
@@ -370,7 +492,7 @@ exports.listJobs = async (req, res) => {
     const jobs = await ClientJob.find(filter)
       .sort({ _id: -1 })
       .limit(q.limit + 1)
-      .select('contractSignor propertyAddress stage status desiredCompletionDate createdAt finance serviceFee depositAmount depositPaidAt');
+      .select('contractSignor propertyAddress stage status desiredCompletionDate createdAt finance serviceFee depositAmount depositPaidAt contractUploadedAt contractSignedByClient contractSignedAt welcomeEmailSentAt');
 
     let nextCursor = null;
     if (jobs.length > q.limit) {
@@ -464,5 +586,42 @@ exports.addDailySales = async (req, res) => {
   } catch (err) {
     if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.markWelcomeEmailSent = async (req, res) => {
+  try {
+    const { contractFileUrl } = z.object({
+      contractFileUrl: z.string().url().optional()
+    }).parse(req.body);
+
+    const job = await ClientJob.findById(req.params.id);
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+
+    if (req.user.role !== 'agent') {
+      return res.status(403).json({ message: 'Agents only' });
+    }
+
+    job.welcomeEmailSentAt = new Date();
+    if (contractFileUrl) {
+      job.contractFileUrl = contractFileUrl;
+      job.contractUploadedAt = new Date();
+    }
+
+    await job.save();
+
+    res.json({
+      success: true,
+      message: 'Welcome email marked as sent',
+      job: {
+        _id: job._id,
+        welcomeEmailSentAt: job.welcomeEmailSentAt,
+        contractFileUrl: job.contractFileUrl,
+        contractUploadedAt: job.contractUploadedAt
+      }
+    });
+  } catch (err) {
+    if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
+    res.status(500).json({ message: err.message || 'Server error' });
   }
 };

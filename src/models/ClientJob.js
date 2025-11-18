@@ -23,7 +23,21 @@ const ClientJobSchema = new mongoose.Schema({
   serviceFee: { type: Number, default: 0 }, 
   depositAmount: { type: Number, default: 0 }, 
   depositPaidAt: { type: Date },
-  contractFileUrl: { type: String, default: '' }, 
+  
+  contractFileUrl: { type: String, default: '' },
+  contractUploadedAt: { type: Date },
+  contractSignedByClient: { type: Boolean, default: false },
+  contractSignedAt: { type: Date },
+  contractSignatureImage: { type: String, default: '' },
+  welcomeEmailSentAt: { type: Date },
+  
+  docusignEnvelopeId: { type: String, default: null },
+  docusignStatus: { 
+    type: String, 
+    enum: ['not_sent', 'sent', 'delivered', 'completed', 'declined', 'voided'],
+    default: 'not_sent'
+  },
+  
   scopeNotes: { type: String, default: '' },
 
   status: {

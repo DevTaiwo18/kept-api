@@ -4,15 +4,27 @@ let transporter;
 
 function getTransporter() {
   if (transporter) return transporter;
+  
   transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port: Number(process.env.SMTP_PORT || 465),
     secure: true,
     auth: {
-      user: process.env.SMTP_USER,     
-      pass: process.env.SMTP_PASS,     
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
     },
+    pool: true,
+    maxConnections: 5,
   });
+  
+  transporter.verify((error) => {
+    if (error) {
+      console.error('SMTP Configuration Error:', error);
+    } else {
+      console.log('SMTP Server ready');
+    }
+  });
+
   return transporter;
 }
 
@@ -24,12 +36,14 @@ async function sendEmail({
   cc,
   bcc,
   replyTo,
-  attachments, 
+  attachments,
   headers,
   from,
 }) {
+  const fromAddress = from || process.env.MAIL_FROM || `"Kept House" <${process.env.SMTP_USER}>`;
+
   const mailOptions = {
-    from: from || process.env.MAIL_FROM || process.env.SMTP_USER,
+    from: fromAddress,
     to,
     subject,
     html,
@@ -38,11 +52,25 @@ async function sendEmail({
     bcc,
     replyTo,
     attachments,
-    headers,
+    headers: {
+      'X-Mailer': 'Kept House',
+      ...headers,
+    },
   };
 
-  const info = await getTransporter().sendMail(mailOptions);
-  return { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected };
+  try {
+    const info = await getTransporter().sendMail(mailOptions);
+    console.log('Email sent:', info.messageId);
+    return { 
+      success: true,
+      messageId: info.messageId, 
+      accepted: info.accepted, 
+      rejected: info.rejected 
+    };
+  } catch (error) {
+    console.error('Email send failed:', error);
+    throw error;
+  }
 }
 
 module.exports = { sendEmail };

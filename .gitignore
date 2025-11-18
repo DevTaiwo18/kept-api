@@ -1,2 +1,4 @@
 node_modules
 .env
+docusign_private.key
+*.key

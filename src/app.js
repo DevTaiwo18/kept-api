@@ -12,6 +12,8 @@ const checkoutRoutes = require('./routes/checkout.route');
 const orderRoutes = require('./routes/orders.route');
 const webhookRoutes = require('./routes/webhook.route');
 const emailTemplateRoutes = require('./routes/emailTemplates.routes');
+const fileUploadRoutes = require('./routes/fileupload.routes');
+const docusignRoutes = require('./routes/docusign');
 
 const app = express();
 
@@ -20,6 +22,8 @@ app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(morgan('dev'));
 
 app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes);
+
+app.use('/api/files', fileUploadRoutes);
 
 app.use(express.json());
 
@@ -31,6 +35,7 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/checkout', checkoutRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/email-templates', emailTemplateRoutes);
+app.use('/api/docusign', docusignRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, env: process.env.NODE_ENV || 'dev', time: new Date().toISOString() });
