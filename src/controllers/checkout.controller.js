@@ -43,7 +43,11 @@ async function expandComposite(id) {
         photos: photos,
         unitPrice,
         quantity: 1,
-        subtotal: unitPrice
+        subtotal: unitPrice,
+        dimensions: approved.dimensions || null,
+        weight: approved.weight || null,
+        material: approved.material || null,
+        tags: approved.tags || []
     };
 }
 
@@ -90,7 +94,7 @@ function toStripeLineItems(items, deliveryFee, taxAmount, currency = 'usd') {
         lineItems.push({
             price_data: {
                 currency,
-                product_data: { name: 'Shipping & Delivery' },
+                product_data: { name: 'Shipping & Handling' },
                 unit_amount: Math.round(deliveryFee * 100)
             },
             quantity: 1
@@ -135,6 +139,7 @@ exports.calculateCheckoutTotals = async (req, res) => {
         let deliveryFee = 0;
         let shippingDetails = null;
         let originAddress = null;
+        let shippingBreakdown = null;
 
         if (deliveryType === 'shipping') {
             if (!address || !city || !state || !zipCode) {
@@ -149,7 +154,17 @@ exports.calculateCheckoutTotals = async (req, res) => {
                     destinationAddress: { address, city, state, zipCode },
                     items: expanded
                 });
+                
                 deliveryFee = shippingDetails.rate || 0;
+                
+                shippingBreakdown = {
+                    fedexRate: shippingDetails.fedexRate || 0,
+                    handlingFee: shippingDetails.handlingFee || 0,
+                    total: deliveryFee,
+                    carrier: shippingDetails.carrier,
+                    service: shippingDetails.service,
+                    estimatedDays: shippingDetails.estimatedDays
+                };
             } catch (error) {
                 console.error('Shipping calculation error:', error);
                 return res.status(400).json({ message: error.message || 'Unable to calculate shipping' });
@@ -166,10 +181,20 @@ exports.calculateCheckoutTotals = async (req, res) => {
         const grandTotal = subtotal + deliveryFee + taxAmount;
 
         res.json({
-            subtotal,
-            deliveryFee,
+            subtotal: Math.round(subtotal * 100) / 100,
+            deliveryFee: Math.round(deliveryFee * 100) / 100,
             taxAmount,
-            grandTotal,
+            grandTotal: Math.round(grandTotal * 100) / 100,
+            breakdown: {
+                itemsSubtotal: Math.round(subtotal * 100) / 100,
+                shipping: shippingBreakdown,
+                tax: {
+                    rate: TAX_RATE,
+                    amount: taxAmount,
+                    description: 'Sales Tax (7.8%)'
+                },
+                total: Math.round(grandTotal * 100) / 100
+            },
             shippingDetails,
             originAddress: deliveryType === 'pickup' ? originAddress : null,
             items: expanded
@@ -255,10 +280,10 @@ exports.createCheckoutSession = async (req, res) => {
             job: originAddress.jobId,
             items: expanded,
             currency: process.env.CURRENCY || 'usd',
-            subtotal,
-            deliveryFee,
+            subtotal: Math.round(subtotal * 100) / 100,
+            deliveryFee: Math.round(deliveryFee * 100) / 100,
             taxAmount,
-            totalAmount: grandTotal,
+            totalAmount: Math.round(grandTotal * 100) / 100,
             paymentStatus: 'pending',
             paymentProvider: 'stripe',
             deliveryDetails: {

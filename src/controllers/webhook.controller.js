@@ -4,6 +4,9 @@ const Cart = require('../models/Cart');
 const ClientJob = require('../models/ClientJob');
 const { stripe } = require('../services/stripe');
 const { createShippingLabel } = require('../services/fedex');
+const { sendEmail } = require('../utils/sendEmail');
+
+const ADMIN_EMAIL = 'admin@keptestate.com';
 
 function calculateKeptHouseCommission(grossSales) {
   let commission = 0;
@@ -49,6 +52,112 @@ function parsePropertyAddress(propertyAddress) {
   };
 }
 
+function getEmailTemplate(name, content) {
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f4f4f4;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px 0;">
+          <tr>
+            <td align="center">
+              <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <tr>
+                  <td style="background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); padding: 30px 40px; text-align: center;">
+                    <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-family: Arial, sans-serif; font-weight: 600;">
+                      Kept House
+                    </h1>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 40px 40px 30px 40px;">
+                    <h2 style="color: #101010; margin: 0 0 20px 0; font-size: 22px; font-family: Arial, sans-serif; font-weight: 500;">
+                      Hi ${name},
+                    </h2>
+                    ${content}
+                  </td>
+                </tr>
+                <tr>
+                  <td style="background-color: #f9f9f9; padding: 25px 40px; border-top: 1px solid #e0e0e0;">
+                    <p style="font-size: 14px; line-height: 1.6; color: #666; margin: 0 0 10px 0; font-family: Arial, sans-serif;">
+                      Best regards,<br/>
+                      <strong style="color: #333;">The Kept House Team</strong>
+                    </p>
+                    <p style="font-size: 12px; line-height: 1.5; color: #999; margin: 15px 0 0 0; font-family: Arial, sans-serif;">
+                      If you have any questions, feel free to contact us at admin@keptestate.com
+                    </p>
+                  </td>
+                </tr>
+              </table>
+              <table width="600" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="padding: 20px; text-align: center;">
+                    <p style="font-size: 12px; color: #999; margin: 0; font-family: Arial, sans-serif;">
+                      © ${new Date().getFullYear()} Kept House. All rights reserved.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  `;
+}
+
+async function sendAgentOrderNotification(order) {
+  const orderNumber = order._id.toString().slice(-8).toUpperCase();
+  const deliveryType = order.deliveryDetails?.type === 'shipping' ? '🚚 Shipping' : '📦 Pickup';
+  const itemCount = order.items?.length || 0;
+  
+  const content = `
+    <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 20px; margin: 20px 0; border-radius: 4px;">
+      <p style="font-size: 16px; line-height: 1.6; color: #856404; margin: 0; font-family: Arial, sans-serif;">
+        <strong>🔔 New Order Alert!</strong>
+      </p>
+    </div>
+    
+    <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0; font-family: Arial, sans-serif;">
+      You have received a new order that requires your attention.
+    </p>
+    
+    <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 20px; margin: 20px 0; border-radius: 4px;">
+      <p style="font-size: 14px; line-height: 1.8; color: #333; margin: 0; font-family: Arial, sans-serif;">
+        <strong style="color: #101010;">Order #:</strong> ${orderNumber}<br/>
+        <strong style="color: #101010;">Items:</strong> ${itemCount}<br/>
+        <strong style="color: #101010;">Total:</strong> $${order.totalAmount.toFixed(2)}<br/>
+        <strong style="color: #101010;">Delivery:</strong> ${deliveryType}<br/>
+        <strong style="color: #101010;">Status:</strong> Payment Confirmed ✅
+      </p>
+    </div>
+    
+    <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0; font-family: Arial, sans-serif;">
+      <strong>⚡ Action Required:</strong> Please check your dashboard to view full order details and take necessary action.
+    </p>
+    
+    <p style="font-size: 14px; line-height: 1.6; color: #666; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
+      Log in to your agent dashboard to manage this order and prepare for ${order.deliveryDetails?.type === 'shipping' ? 'shipment' : 'customer pickup'}.
+    </p>
+  `;
+
+  try {
+    await sendEmail({
+      to: ADMIN_EMAIL,
+      subject: `🔔 New Order #${orderNumber} - Action Required`,
+      html: getEmailTemplate('Agent', content),
+      text: `New Order Alert! Order #${orderNumber} has been placed. ${itemCount} item(s), $${order.totalAmount.toFixed(2)} total. Delivery: ${deliveryType}. Please check your dashboard to view details and take action.`
+    });
+    
+    console.log(`Agent notification sent to ${ADMIN_EMAIL} for order ${orderNumber}`);
+  } catch (error) {
+    console.error('Failed to send agent notification email:', error);
+  }
+}
+
 exports.stripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
   
@@ -91,7 +200,6 @@ exports.stripeWebhook = async (req, res) => {
         job.stripe.paymentIntentId = session.payment_intent;
         job.stripe.sessionId = session.id;
 
-        // Calculate Kept House Commission (tiered)
         const keptHouseCommission = calculateKeptHouseCommission(job.finance.gross || 0);
         job.finance.fees = keptHouseCommission;
 
@@ -182,7 +290,7 @@ exports.stripeWebhook = async (req, res) => {
       await order.save();
 
       await Cart.findOneAndUpdate(
-        { user: order.buyer }, 
+        { user: order.user }, 
         { $set: { items: [] } }, 
         { upsert: true }
       );
@@ -212,7 +320,6 @@ exports.stripeWebhook = async (req, res) => {
             at: new Date()
           });
 
-          // Calculate Kept House Commission (tiered)
           const keptHouseCommission = calculateKeptHouseCommission(job.finance.gross);
           job.finance.fees = keptHouseCommission;
 
@@ -225,6 +332,9 @@ exports.stripeWebhook = async (req, res) => {
           await job.save();
         }
       }
+
+      // Send agent notification
+      await sendAgentOrderNotification(order);
 
       return res.json({ received: true });
       

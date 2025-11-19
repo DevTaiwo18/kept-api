@@ -3,7 +3,7 @@ const { z } = require('zod');
 const Item = require('../models/Item');
 const ClientJob = require('../models/ClientJob');
 const { User } = require('../models/User');
-const cloudinary = require('../config/cloudinary');
+const { cloudinary } = require('../config/cloudinary');
 const openai = require('../config/openai');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -37,7 +37,7 @@ async function aiAnalyzeSinglePhoto(url, prompt, maxRetries = 4) {
           },
         ],
         temperature: 0.2,
-        max_tokens: 250,
+        max_tokens: 400,
       });
       const raw = resp.choices?.[0]?.message?.content || '{}';
       let parsed;
@@ -270,9 +270,18 @@ exports.analyzeWithAI = async (req, res) => {
       
       const prompt =
         `You are helping catalog estate-sale items.\n` +
-        `This item has ${groupPhotos.length} photo(s). Analyze the first photo and return strict JSON with keys: title, description, category, priceLow, priceHigh, confidence (0-1).\n` +
-        `Category must be one of: ${catList.join(', ')}.\n` +
-        `Be concise. No extra fields. If uncertain, category "Misc" with lower confidence.`;
+        `This item has ${groupPhotos.length} photo(s). Analyze the first photo and return strict JSON with keys:\n` +
+        `- title (string): Short product name\n` +
+        `- description (string): Brief description\n` +
+        `- category (string): Must be one of: ${catList.join(', ')}\n` +
+        `- priceLow (number): Low price estimate in USD\n` +
+        `- priceHigh (number): High price estimate in USD\n` +
+        `- confidence (number): 0-1 confidence score\n` +
+        `- dimensions (object): { length: number, width: number, height: number } in inches (estimate if not visible)\n` +
+        `- weight (number): weight in lbs (estimate)\n` +
+        `- material (string): primary material (e.g., "Wood", "Metal", "Plastic", "Fabric", "Glass")\n` +
+        `- tags (array): 3-5 specific descriptive tags (e.g., ["Mid-Century Modern", "Teak", "Danish Design"] NOT ["Furniture", "Chair"])\n\n` +
+        `Use specific, descriptive tags. Avoid generic categories. Be concise. No extra fields.`;
 
       try {
         const parsed = await aiAnalyzeSinglePhoto(firstPhoto, prompt);
@@ -287,6 +296,18 @@ exports.analyzeWithAI = async (req, res) => {
           priceLow: Number(parsed.priceLow) || 0,
           priceHigh: Number(parsed.priceHigh) || 0,
           confidence: Number(parsed.confidence) || 0,
+          dimensions: {
+            length: Number(parsed.dimensions?.length) || null,
+            width: Number(parsed.dimensions?.width) || null,
+            height: Number(parsed.dimensions?.height) || null,
+            unit: 'inches'
+          },
+          weight: {
+            value: Number(parsed.weight) || null,
+            unit: 'lbs'
+          },
+          material: parsed.material || '',
+          tags: Array.isArray(parsed.tags) ? parsed.tags.filter(t => t && typeof t === 'string') : []
         });
         
         analyzedGroups.add(group.itemNumber);
@@ -333,7 +354,11 @@ exports.approveItem = async (req, res) => {
       category: itm.category,
       priceLow: itm.priceLow,
       priceHigh: itm.priceHigh,
-      price: itm.price
+      price: itm.price,
+      dimensions: itm.dimensions || { length: null, width: null, height: null, unit: 'inches' },
+      weight: itm.weight || { value: null, unit: 'lbs' },
+      material: itm.material || '',
+      tags: itm.tags || []
     }));
 
     if (item.status === 'needs_review') {

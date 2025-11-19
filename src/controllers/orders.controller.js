@@ -122,7 +122,7 @@ exports.getOrder = async (req, res) => {
   try {
     const order = await Order.findOne({ 
       _id: req.params.id, 
-      buyer: req.user.sub 
+      user: req.user.sub
     }).lean();
     
     if (!order) {
@@ -138,7 +138,7 @@ exports.getOrder = async (req, res) => {
 
 exports.listMyOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ buyer: req.user.sub })
+    const orders = await Order.find({ user: req.user.sub })
       .sort({ createdAt: -1 })
       .lean();
     
@@ -156,7 +156,7 @@ exports.saveDeliveryDetails = async (req, res) => {
     
     const order = await Order.findOne({ 
       _id: orderId, 
-      buyer: req.user.sub 
+      user: req.user.sub
     }).populate('items');
     
     if (!order) {
@@ -241,7 +241,10 @@ exports.updateOrderStatus = async (req, res) => {
   try {
     const { fulfillmentStatus, trackingNumber, notes } = req.body;
     
-    const order = await Order.findById(req.params.id).populate('buyer', 'email name');
+    const order = await Order.findById(req.params.id).populate({
+      path: 'user',
+      select: 'email name'
+    });
     
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
@@ -269,15 +272,15 @@ exports.updateOrderStatus = async (req, res) => {
     
     await order.save();
     
-    if (fulfillmentStatus && fulfillmentStatus !== oldStatus && order.buyer?.email) {
+    if (fulfillmentStatus && fulfillmentStatus !== oldStatus && order.user?.email) {
       try {
         await sendOrderStatusEmail({
-          buyerEmail: order.buyer.email,
-          buyerName: order.buyer.name || 'Customer',
-          orderNumber: order.orderNumber || order._id.toString().slice(-8).toUpperCase(),
+          buyerEmail: order.user.email,
+          buyerName: order.user.name || 'Customer',
+          orderNumber: order._id.toString().slice(-8).toUpperCase(),
           oldStatus,
           newStatus: fulfillmentStatus,
-          trackingNumber,
+          trackingNumber: trackingNumber || order.shippingDetails?.trackingNumber,
         });
       } catch (emailErr) {
         console.error('Failed to send order status email:', emailErr);

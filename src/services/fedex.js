@@ -5,6 +5,8 @@ const FEDEX_SECRET = process.env.FEDEX_SECRET;
 const FEDEX_ACCOUNT = process.env.FEDEX_ACCOUNT;
 const FEDEX_BASE_URL = process.env.FEDEX_BASE_URL || 'https://apis-sandbox.fedex.com';
 
+const HANDLING_MULTIPLIER = 2.5;
+
 async function getFedExToken() {
   try {
     const response = await axios.post(
@@ -41,11 +43,45 @@ function formatPhoneNumber(phone) {
   return '5135551234';
 }
 
+function calculateItemWeight(item) {
+  if (item.weight && item.weight.value) {
+    return item.weight.unit === 'kg' ? item.weight.value * 2.20462 : item.weight.value;
+  }
+  return 5;
+}
+
+function getItemDimensions(item) {
+  if (item.dimensions && item.dimensions.length && item.dimensions.width && item.dimensions.height) {
+    return {
+      length: Math.max(Math.round(item.dimensions.length), 1),
+      width: Math.max(Math.round(item.dimensions.width), 1),
+      height: Math.max(Math.round(item.dimensions.height), 1)
+    };
+  }
+  return { length: 12, width: 12, height: 12 };
+}
+
 exports.calculateShipping = async ({ originAddress, destinationAddress, items }) => {
   try {
     const token = await getFedExToken();
     
-    const totalWeight = Math.max(items.length * 5, 1);
+    const packages = items.map(item => {
+      const weight = calculateItemWeight(item);
+      const dimensions = getItemDimensions(item);
+      
+      return {
+        weight: {
+          units: 'LB',
+          value: Math.max(Math.round(weight), 1)
+        },
+        dimensions: {
+          length: dimensions.length,
+          width: dimensions.width,
+          height: dimensions.height,
+          units: 'IN'
+        }
+      };
+    });
 
     const requestBody = {
       requestedShipment: {
@@ -69,12 +105,7 @@ exports.calculateShipping = async ({ originAddress, destinationAddress, items })
         },
         pickupType: FEDEX_ACCOUNT ? 'USE_SCHEDULED_PICKUP' : 'DROPOFF_AT_FEDEX_LOCATION',
         rateRequestType: FEDEX_ACCOUNT ? ['ACCOUNT', 'LIST'] : ['LIST'],
-        requestedPackageLineItems: [{
-          weight: {
-            units: 'LB',
-            value: totalWeight
-          }
-        }]
+        requestedPackageLineItems: packages
       }
     };
 
@@ -104,12 +135,16 @@ exports.calculateShipping = async ({ originAddress, destinationAddress, items })
     }
 
     const rateDetail = groundService.ratedShipmentDetails[0];
-    const rate = parseFloat(rateDetail.totalNetCharge) || 0;
+    const fedexRate = parseFloat(rateDetail.totalNetCharge) || 0;
+    const handlingFee = fedexRate * (HANDLING_MULTIPLIER - 1);
+    const totalShipping = fedexRate * HANDLING_MULTIPLIER;
 
     return {
       carrier: 'FedEx',
       service: groundService.serviceName,
-      rate,
+      fedexRate: Math.round(fedexRate * 100) / 100,
+      handlingFee: Math.round(handlingFee * 100) / 100,
+      rate: Math.round(totalShipping * 100) / 100,
       estimatedDays: groundService.commit?.dateDetail?.dayOfWeek ? 
         calculateBusinessDays(groundService.commit.dateDetail.dayOfWeek) : 5
     };
@@ -117,10 +152,16 @@ exports.calculateShipping = async ({ originAddress, destinationAddress, items })
   } catch (error) {
     console.error('FedEx rate calculation error:', error.response?.data || error.message);
     
+    const fallbackFedexRate = 25.00;
+    const fallbackHandlingFee = fallbackFedexRate * (HANDLING_MULTIPLIER - 1);
+    const fallbackTotal = fallbackFedexRate * HANDLING_MULTIPLIER;
+    
     return {
       carrier: 'FedEx',
       service: 'Ground (Estimated)',
-      rate: 25.00,
+      fedexRate: fallbackFedexRate,
+      handlingFee: Math.round(fallbackHandlingFee * 100) / 100,
+      rate: Math.round(fallbackTotal * 100) / 100,
       estimatedDays: 5
     };
   }
@@ -145,8 +186,6 @@ exports.createShippingLabel = async (order, originAddress) => {
   try {
     const token = await getFedExToken();
     
-    const totalWeight = Math.max(order.items.length * 5, 1);
-
     if (!order.deliveryDetails?.fullName || !order.deliveryDetails?.phoneNumber) {
       console.error('Missing required delivery details:', order.deliveryDetails);
       throw new Error('Missing required delivery details');
@@ -160,17 +199,35 @@ exports.createShippingLabel = async (order, originAddress) => {
     const recipientPhone = formatPhoneNumber(order.deliveryDetails.phoneNumber);
     const shipperPhone = formatPhoneNumber(originAddress.phoneNumber);
 
+    const packages = order.items.map(item => {
+      const weight = calculateItemWeight(item);
+      const dimensions = getItemDimensions(item);
+      
+      return {
+        weight: {
+          units: 'LB',
+          value: Math.max(Math.round(weight), 1)
+        },
+        dimensions: {
+          length: dimensions.length,
+          width: dimensions.width,
+          height: dimensions.height,
+          units: 'IN'
+        }
+      };
+    });
+
     const requestBody = {
       requestedShipment: {
         shipper: {
           contact: {
-            personName: originAddress.contactName || 'Estate Sale',
+            personName: (originAddress.contactName || 'Estate Sale').trim(),
             phoneNumber: shipperPhone,
             companyName: 'Kept House Estate Sales'
           },
           address: {
-            streetLines: [originAddress.address],
-            city: originAddress.city,
+            streetLines: [(originAddress.address || '').trim()],
+            city: (originAddress.city || '').trim(),
             stateOrProvinceCode: originAddress.state,
             postalCode: originAddress.zipCode,
             countryCode: 'US',
@@ -179,12 +236,12 @@ exports.createShippingLabel = async (order, originAddress) => {
         },
         recipients: [{
           contact: {
-            personName: order.deliveryDetails.fullName,
+            personName: (order.deliveryDetails.fullName || '').trim(),
             phoneNumber: recipientPhone
           },
           address: {
-            streetLines: [order.deliveryDetails.address],
-            city: order.deliveryDetails.city,
+            streetLines: [(order.deliveryDetails.address || '').trim()],
+            city: (order.deliveryDetails.city || '').trim(),
             stateOrProvinceCode: order.deliveryDetails.state,
             postalCode: order.deliveryDetails.zipCode,
             countryCode: 'US',
@@ -202,18 +259,7 @@ exports.createShippingLabel = async (order, originAddress) => {
           imageType: 'PDF',
           labelStockType: 'PAPER_85X11_TOP_HALF_LABEL'
         },
-        requestedPackageLineItems: [{
-          weight: {
-            units: 'LB',
-            value: totalWeight
-          },
-          dimensions: {
-            length: 12,
-            width: 12,
-            height: 12,
-            units: 'IN'
-          }
-        }]
+        requestedPackageLineItems: packages
       }
     };
 

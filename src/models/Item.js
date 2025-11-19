@@ -22,6 +22,18 @@ const itemSchema = new mongoose.Schema({
     priceLow: Number,
     priceHigh: Number,
     confidence: Number,
+    dimensions: {
+      length: { type: Number },
+      width: { type: Number },
+      height: { type: Number },
+      unit: { type: String, enum: ['inches', 'cm'], default: 'inches' }
+    },
+    weight: {
+      value: { type: Number },
+      unit: { type: String, enum: ['lbs', 'kg'], default: 'lbs' }
+    },
+    material: { type: String },
+    tags: [String]
   }],
   approvedItems: [{
     itemNumber: Number,
@@ -31,7 +43,19 @@ const itemSchema = new mongoose.Schema({
     category: String,
     priceLow: Number,
     priceHigh: Number,
-    price: Number
+    price: Number,
+    dimensions: {
+      length: { type: Number },
+      width: { type: Number },
+      height: { type: Number },
+      unit: { type: String, enum: ['inches', 'cm'], default: 'inches' }
+    },
+    weight: {
+      value: { type: Number },
+      unit: { type: String, enum: ['lbs', 'kg'], default: 'lbs' }
+    },
+    material: { type: String },
+    tags: [String]
   }],
   soldPhotoIndices: [Number],
   soldAt: Date,
