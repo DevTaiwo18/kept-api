@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const fileUpload = require('express-fileupload');
 
 const authRoutes = require('./routes/auth.route');
 const clientJobRoutes = require('./routes/clientJob.route');
@@ -27,11 +26,6 @@ app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoute
 app.use('/api/files', fileUploadRoutes);
 
 app.use(express.json());
-app.use(fileUpload({
-  limits: { fileSize: 500 * 1024 * 1024 },
-  useTempFiles: true,
-  tempFileDir: '/tmp/'
-}));
 
 app.use('/api/auth', authRoutes);
 app.use('/api/client-jobs', clientJobRoutes);
