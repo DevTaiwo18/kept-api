@@ -7,6 +7,8 @@ const {
   analyzeWithAI,
   approveItem,
   reopenItem,
+  updateEstateSalePrice,
+  markItemAsSold,
   listByJob,
   getOne,
 } = require('../controllers/item.controller');
@@ -18,6 +20,8 @@ router.post('/:id/photos', auth, allow('client', 'agent'), upload.array('photos'
 router.post('/:id/ai/analyze', auth, allow('client', 'agent'), analyzeWithAI);
 router.patch('/:id/approve', auth, allow('agent'), approveItem);
 router.post('/:id/reopen', auth, allow('agent'), reopenItem);
+router.patch('/:id/estate-sale-price', auth, allow('agent'), updateEstateSalePrice);
+router.patch('/:id/mark-sold', auth, allow('agent'), markItemAsSold);
 router.get('/job/:jobId', auth, allow('client', 'agent'), listByJob);
 router.get('/:id', auth, allow('client', 'agent'), getOne);
 

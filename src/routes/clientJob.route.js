@@ -17,5 +17,12 @@ router.post('/:id/deposit/checkout', allow('client','agent'), ctrl.createDeposit
 
 router.patch('/:id/progress', allow('agent'), ctrl.updateProgress);
 router.post('/:id/finance/daily', allow('agent'), ctrl.addDailySales);
+router.patch('/:id/toggle-online-sale', allow('agent'), ctrl.toggleOnlineSale);
+
+router.put('/:id/sale-timeframes', allow('agent'), ctrl.updateSaleTimeframes);
+
+router.post('/:id/hauler-videos', allow('agent'), ctrl.addHaulerVideo);
+router.delete('/:id/hauler-videos/:videoId', allow('agent'), ctrl.deleteHaulerVideo);
+router.get('/:id/hauler-videos', ctrl.getHaulerVideos);
 
 module.exports = router;

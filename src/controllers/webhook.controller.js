@@ -333,7 +333,6 @@ exports.stripeWebhook = async (req, res) => {
         }
       }
 
-      // Send agent notification
       await sendAgentOrderNotification(order);
 
       return res.json({ received: true });

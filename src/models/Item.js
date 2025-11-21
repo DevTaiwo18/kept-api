@@ -44,6 +44,9 @@ const itemSchema = new mongoose.Schema({
     priceLow: Number,
     priceHigh: Number,
     price: Number,
+    estateSalePrice: { type: Number, default: null },
+    estateSalePriceSetAt: { type: Date, default: null },
+    estateSalePriceSetBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     dimensions: {
       length: { type: Number },
       width: { type: Number },

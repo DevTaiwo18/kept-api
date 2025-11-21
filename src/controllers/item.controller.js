@@ -18,6 +18,102 @@ function transformCloudinaryUrl(u) {
   } catch { return u; }
 }
 
+const markAsSoldSchema = z.object({
+  itemNumber: z.number().int().positive(),
+  estateSalePrice: z.number().positive(),
+});
+
+exports.markItemAsSold = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const input = markAsSoldSchema.parse(req.body);
+    
+    const item = await Item.findById(id).populate('job', 'client');
+    if (!item) return res.status(404).json({ message: 'Item not found' });
+    if (req.user.role !== 'agent') return res.status(403).json({ message: 'Agents only' });
+    
+    const approvedItem = item.approvedItems.find(ai => ai.itemNumber === input.itemNumber);
+    if (!approvedItem) {
+      return res.status(404).json({ message: 'Approved item not found' });
+    }
+    
+    const photoIndices = approvedItem.photoIndices || [];
+    
+    const alreadySold = photoIndices.some(idx => item.soldPhotoIndices?.includes(idx));
+    if (alreadySold) {
+      return res.status(400).json({ message: 'Item is already marked as sold' });
+    }
+    
+    approvedItem.estateSalePrice = input.estateSalePrice;
+    approvedItem.estateSalePriceSetAt = new Date();
+    approvedItem.estateSalePriceSetBy = req.user.sub;
+    
+    item.soldPhotoIndices = item.soldPhotoIndices || [];
+    photoIndices.forEach(idx => {
+      if (!item.soldPhotoIndices.includes(idx)) {
+        item.soldPhotoIndices.push(idx);
+      }
+    });
+    
+    if (!item.soldAt) {
+      item.soldAt = new Date();
+    }
+    
+    await item.save();
+    
+    const jobId = item.job._id || item.job;
+    const job = await ClientJob.findById(jobId);
+    
+    if (job) {
+      job.finance = job.finance || {};
+      job.finance.daily = job.finance.daily || [];
+      
+      job.finance.daily.push({
+        label: `Estate Sale - ${approvedItem.title || `Item ${approvedItem.itemNumber}`}`,
+        amount: input.estateSalePrice,
+        at: new Date()
+      });
+      
+      job.finance.gross = (job.finance.gross || 0) + input.estateSalePrice;
+      
+      const calculateKeptHouseCommission = (grossSales) => {
+        let commission = 0;
+        if (grossSales <= 7500) {
+          commission = grossSales * 0.50;
+        } else if (grossSales <= 20000) {
+          commission = (7500 * 0.50) + ((grossSales - 7500) * 0.40);
+        } else {
+          commission = (7500 * 0.50) + (12500 * 0.40) + ((grossSales - 20000) * 0.30);
+        }
+        return Math.round(commission * 100) / 100;
+      };
+      
+      job.finance.fees = calculateKeptHouseCommission(job.finance.gross);
+      
+      const serviceFee = (job.serviceFee && job.serviceFee > 0) ? job.serviceFee : 0;
+      const depositPaid = (job.depositAmount && job.depositAmount > 0 && job.depositPaidAt) ? job.depositAmount : 0;
+      const haulingCost = job.finance.haulingCost || 0;
+      
+      job.finance.net = job.finance.gross - serviceFee - job.finance.fees - haulingCost + depositPaid;
+      
+      await job.save();
+    }
+    
+    res.json({
+      success: true,
+      message: 'Item marked as sold and added to finance',
+      itemNumber: input.itemNumber,
+      estateSalePrice: approvedItem.estateSalePrice,
+      soldAt: item.soldAt,
+      finance: job?.finance
+    });
+  } catch (err) {
+    if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
+    console.error('Mark as sold error:', err);
+    res.status(500).json({ message: 'Failed to mark item as sold' });
+  }
+};
+
 async function aiAnalyzeSinglePhoto(url, prompt, maxRetries = 4) {
   let delay = 500;
   let lastErr = null;
@@ -79,19 +175,24 @@ const createItemSchema = z.object({
   jobId: z.string(),
 });
 
+const updateEstateSalePriceSchema = z.object({
+  itemNumber: z.number().int().positive(),
+  estateSalePrice: z.number().positive().optional().nullable(),
+});
+
 exports.createItem = async (req, res) => {
   try {
     const input = createItemSchema.parse(req.body);
     const job = await ClientJob.findById(input.jobId).select('_id client');
     if (!job) return res.status(404).json({ message: 'Job not found' });
     if (req.user.role === 'client' && String(job.client) !== req.user.sub) return res.status(403).json({ message: 'Forbidden' });
-    
+
     let item = await Item.findOne({ job: job._id });
-    
+
     if (item) {
       return res.status(200).json(item);
     }
-    
+
     const doc = await Item.create({
       job: job._id,
       uploader: req.user.sub,
@@ -123,7 +224,7 @@ exports.uploadPhotos = async (req, res) => {
     for (let i = 0; i < req.files.length; i++) {
       const file = req.files[i];
       const original = file.originalname || 'unknown';
-      
+
       try {
         const result = await cloudinary.uploader.upload(file.path, {
           folder: 'kept-house/items',
@@ -132,20 +233,20 @@ exports.uploadPhotos = async (req, res) => {
           timeout: 120000,
           chunk_size: 6000000,
         });
-        
+
         added.push(result.secure_url);
-        
-        await fs.unlink(file.path).catch(() => {});
-        
+
+        await fs.unlink(file.path).catch(() => { });
+
         if (i < req.files.length - 1) {
           await sleep(200);
         }
-        
+
       } catch (error) {
         console.error(`Failed to upload ${original}:`, error);
-        
-        await fs.unlink(file.path).catch(() => {});
-        
+
+        await fs.unlink(file.path).catch(() => { });
+
         let errorMsg = error?.message || 'upload failed';
         if (error?.code === 'ENOTFOUND') {
           errorMsg = 'Network error: Cannot reach Cloudinary servers. Please check your internet connection.';
@@ -160,9 +261,9 @@ exports.uploadPhotos = async (req, res) => {
         } else if (error?.http_code === 420 || error?.http_code === 429) {
           errorMsg = 'Rate limit exceeded. Please try uploading fewer files at once.';
         }
-        
-        failed.push({ 
-          file: original, 
+
+        failed.push({
+          file: original,
           reason: errorMsg,
           code: error?.code,
           httpCode: error?.http_code
@@ -173,7 +274,7 @@ exports.uploadPhotos = async (req, res) => {
     if (added.length) {
       if (itemNumber) {
         const existingGroup = item.photoGroups.find(g => g.itemNumber === parseInt(itemNumber));
-        
+
         if (existingGroup) {
           const startIndex = item.photos.length;
           item.photos.push(...added);
@@ -186,9 +287,9 @@ exports.uploadPhotos = async (req, res) => {
         const startIndex = item.photos.length;
         item.photos.push(...added);
         const endIndex = item.photos.length - 1;
-        
+
         const nextItemNumber = item.photoGroups.length + 1;
-        
+
         item.photoGroups.push({
           itemNumber: nextItemNumber,
           title: `Item ${nextItemNumber}`,
@@ -197,11 +298,11 @@ exports.uploadPhotos = async (req, res) => {
           photoCount: added.length
         });
       }
-      
+
       if (req.user.role === 'agent' && item.status === 'approved') {
         item.status = 'needs_review';
       }
-      
+
       await item.save();
     }
 
@@ -229,27 +330,27 @@ exports.analyzeWithAI = async (req, res) => {
     const item = await Item.findById(id).populate('job', 'client accountManager');
     if (!item) return res.status(404).json({ message: 'Item not found' });
     if (req.user.role === 'client' && String(item.job.client) !== req.user.sub) return res.status(403).json({ message: 'Forbidden' });
-    
+
     if (!item.photoGroups || item.photoGroups.length === 0) {
       return res.status(400).json({ message: 'No photo groups to analyze' });
     }
 
-    const catList = ['Furniture','Tools','Jewelry','Art','Electronics','Outdoor','Appliances','Kitchen','Collectibles','Books/Media','Clothing','Misc'];
-    
+    const catList = ['Furniture', 'Tools', 'Jewelry', 'Art', 'Electronics', 'Outdoor', 'Appliances', 'Kitchen', 'Collectibles', 'Books/Media', 'Clothing', 'Misc'];
+
     const analyzedGroups = new Set(item.analyzedGroupIndices || []);
-    
+
     let groupsToAnalyze;
-    
+
     if (itemNumber) {
       const photoGroup = item.photoGroups.find(g => g.itemNumber === parseInt(itemNumber));
       if (!photoGroup) {
         return res.status(404).json({ message: 'Item number not found' });
       }
-      
+
       if (analyzedGroups.has(photoGroup.itemNumber)) {
         return res.status(400).json({ message: 'This item group has already been analyzed' });
       }
-      
+
       groupsToAnalyze = [photoGroup];
     } else {
       groupsToAnalyze = item.photoGroups.filter(g => !analyzedGroups.has(g.itemNumber));
@@ -260,14 +361,14 @@ exports.analyzeWithAI = async (req, res) => {
     }
 
     const aiResults = [];
-    
+
     for (const group of groupsToAnalyze) {
       const groupPhotos = item.photos.slice(group.startIndex, group.endIndex + 1);
-      
+
       if (groupPhotos.length === 0) continue;
 
       const firstPhoto = groupPhotos[0];
-      
+
       const prompt =
         `You are helping catalog estate-sale items.\n` +
         `This item has ${groupPhotos.length} photo(s). Analyze the first photo and return strict JSON with keys:\n` +
@@ -286,7 +387,7 @@ exports.analyzeWithAI = async (req, res) => {
       try {
         const parsed = await aiAnalyzeSinglePhoto(firstPhoto, prompt);
         if (!catList.includes(parsed.category)) parsed.category = 'Misc';
-        
+
         aiResults.push({
           itemNumber: group.itemNumber,
           photoIndices: Array.from({ length: groupPhotos.length }, (_, i) => group.startIndex + i),
@@ -309,12 +410,12 @@ exports.analyzeWithAI = async (req, res) => {
           material: parsed.material || '',
           tags: Array.isArray(parsed.tags) ? parsed.tags.filter(t => t && typeof t === 'string') : []
         });
-        
+
         analyzedGroups.add(group.itemNumber);
       } catch (err) {
         console.error(`Failed to analyze group ${group.itemNumber}:`, err);
       }
-      
+
       await sleep(500);
     }
 
@@ -322,14 +423,14 @@ exports.analyzeWithAI = async (req, res) => {
 
     item.ai = [...(item.ai || []), ...aiResults];
     item.analyzedGroupIndices = Array.from(analyzedGroups);
-    
+
     await item.save();
 
-    res.json({ 
-      ai: item.ai, 
-      status: item.status, 
+    res.json({
+      ai: item.ai,
+      status: item.status,
       totalAnalyzed: aiResults.length,
-      newAnalysis: aiResults 
+      newAnalysis: aiResults
     });
   } catch (err) {
     console.error('AI analysis error:', err);
@@ -369,7 +470,7 @@ exports.approveItem = async (req, res) => {
 
     item.status = 'approved';
     await item.save();
-    
+
     res.json({
       status: item.status,
       approvedCount: newApprovedItems.length,
@@ -403,6 +504,40 @@ exports.reopenItem = async (req, res) => {
     res.json({ status: item.status, message: 'Item reopened for edits' });
   } catch (err) {
     res.status(500).json({ message: 'Reopen failed' });
+  }
+};
+
+exports.updateEstateSalePrice = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const input = updateEstateSalePriceSchema.parse(req.body);
+
+    const item = await Item.findById(id).populate('job', 'client');
+    if (!item) return res.status(404).json({ message: 'Item not found' });
+    if (req.user.role !== 'agent') return res.status(403).json({ message: 'Agents only' });
+
+    const approvedItem = item.approvedItems.find(ai => ai.itemNumber === input.itemNumber);
+    if (!approvedItem) {
+      return res.status(404).json({ message: 'Approved item not found' });
+    }
+
+    approvedItem.estateSalePrice = input.estateSalePrice;
+    approvedItem.estateSalePriceSetAt = new Date();
+    approvedItem.estateSalePriceSetBy = req.user.sub;
+
+    await item.save();
+
+    res.json({
+      success: true,
+      message: 'Estate sale price updated',
+      itemNumber: input.itemNumber,
+      estateSalePrice: approvedItem.estateSalePrice,
+      estateSalePriceSetAt: approvedItem.estateSalePriceSetAt
+    });
+  } catch (err) {
+    if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
+    console.error('Update estate sale price error:', err);
+    res.status(500).json({ message: 'Update failed' });
   }
 };
 

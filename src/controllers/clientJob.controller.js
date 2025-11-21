@@ -3,6 +3,7 @@ const ClientJob = require('../models/ClientJob');
 const { User } = require('../models/User');
 const { stripe } = require('../services/stripe');
 const { sendEmail } = require('../utils/sendEmail');
+const { cloudinary } = require('../config/cloudinary');
 
 function calculateKeptHouseCommission(grossSales) {
   let commission = 0;
@@ -62,6 +63,20 @@ const requestDepositSchema = z.object({
     message: 'Deposit amount must be either 250 or 500'
   }),
   scopeNotes: z.string().optional(),
+});
+
+const updateSaleTimeframesSchema = z.object({
+  onlineSaleStartDate: z.string().optional().nullable(),
+  onlineSaleEndDate: z.string().optional().nullable(),
+  estateSaleDate: z.string().optional().nullable(),
+  estateSaleStartTime: z.string().optional().nullable(),
+  estateSaleEndTime: z.string().optional().nullable(),
+});
+
+const addHaulerVideoSchema = z.object({
+  url: z.string().url(),
+  title: z.string().optional(),
+  description: z.string().optional(),
 });
 
 const listQuerySchema = z.object({
@@ -622,6 +637,227 @@ exports.markWelcomeEmailSent = async (req, res) => {
     });
   } catch (err) {
     if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
+    res.status(500).json({ message: err.message || 'Server error' });
+  }
+};
+
+exports.toggleOnlineSale = async (req, res) => {
+  try {
+    const job = await ClientJob.findById(req.params.id).populate('client', 'email name');
+
+    if (!job) {
+      return res.status(404).json({ message: 'Job not found' });
+    }
+
+    if (req.user.role !== 'agent') {
+      return res.status(403).json({ message: 'Agents only' });
+    }
+
+    job.isOnlineSaleActive = !job.isOnlineSaleActive;
+
+    if (job.isOnlineSaleActive) {
+      job.stage = 'online_sale';
+    } else {
+      job.stage = 'estate_sale';
+    }
+
+    const stageNote = job.isOnlineSaleActive
+      ? 'Online sale is now active. Items are available for purchase online.'
+      : 'Online sale has ended. Estate sale phase has begun.';
+
+    job.stageNotes.push({
+      stage: job.stage,
+      note: stageNote,
+      by: req.user.sub
+    });
+
+    await job.save();
+
+    let byUserName;
+    if (req.user.role === 'agent') {
+      const agent = await User.findById(req.user.sub).select('name').lean();
+      byUserName = agent?.name;
+    }
+
+    await notifyClient(job, {
+      stage: job.stage,
+      note: stageNote,
+      byUserName
+    });
+
+    res.json({
+      success: true,
+      message: `Online sale ${job.isOnlineSaleActive ? 'enabled' : 'disabled'}`,
+      job: {
+        _id: job._id,
+        isOnlineSaleActive: job.isOnlineSaleActive,
+        stage: job.stage
+      }
+    });
+  } catch (err) {
+    console.error('Toggle online sale error:', err);
+    res.status(500).json({ message: err.message || 'Server error' });
+  }
+};
+
+exports.updateSaleTimeframes = async (req, res) => {
+  try {
+    const input = updateSaleTimeframesSchema.parse(req.body);
+    const job = await ClientJob.findById(req.params.id);
+
+    if (!job) {
+      return res.status(404).json({ message: 'Job not found' });
+    }
+
+    if (req.user.role !== 'agent') {
+      return res.status(403).json({ message: 'Agents only' });
+    }
+
+    if (input.onlineSaleStartDate !== undefined) {
+      job.onlineSaleStartDate = input.onlineSaleStartDate ? new Date(input.onlineSaleStartDate) : null;
+    }
+    if (input.onlineSaleEndDate !== undefined) {
+      job.onlineSaleEndDate = input.onlineSaleEndDate ? new Date(input.onlineSaleEndDate) : null;
+    }
+    if (input.estateSaleDate !== undefined) {
+      job.estateSaleDate = input.estateSaleDate ? new Date(input.estateSaleDate) : null;
+    }
+    if (input.estateSaleStartTime !== undefined) {
+      job.estateSaleStartTime = input.estateSaleStartTime || '';
+    }
+    if (input.estateSaleEndTime !== undefined) {
+      job.estateSaleEndTime = input.estateSaleEndTime || '';
+    }
+
+    await job.save();
+
+    res.json({
+      success: true,
+      message: 'Sale timeframes updated successfully',
+      job: {
+        _id: job._id,
+        onlineSaleStartDate: job.onlineSaleStartDate,
+        onlineSaleEndDate: job.onlineSaleEndDate,
+        estateSaleDate: job.estateSaleDate,
+        estateSaleStartTime: job.estateSaleStartTime,
+        estateSaleEndTime: job.estateSaleEndTime
+      }
+    });
+  } catch (err) {
+    if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
+    console.error('Update sale timeframes error:', err);
+    res.status(500).json({ message: err.message || 'Server error' });
+  }
+};
+
+exports.addHaulerVideo = async (req, res) => {
+  try {
+    const job = await ClientJob.findById(req.params.id);
+
+    if (!job) {
+      return res.status(404).json({ message: 'Job not found' });
+    }
+
+    if (req.user.role !== 'agent') {
+      return res.status(403).json({ message: 'Agents only' });
+    }
+
+    if (!req.files || !req.files.video) {
+      return res.status(400).json({ message: 'Video file is required' });
+    }
+
+    const videoFile = req.files.video;
+    const title = req.body.title || '';
+    const description = req.body.description || '';
+
+    if (!title.trim()) {
+      return res.status(400).json({ message: 'Title is required' });
+    }
+
+    const uploadResult = await cloudinary.uploader.upload(videoFile.tempFilePath, {
+      resource_type: 'video',
+      folder: 'hauler-videos',
+      transformation: [
+        { quality: 'auto' },
+        { fetch_format: 'auto' }
+      ]
+    });
+
+    job.haulerVideos = job.haulerVideos || [];
+    job.haulerVideos.push({
+      url: uploadResult.secure_url,
+      title: title.trim(),
+      description: description.trim(),
+      uploadedBy: req.user.sub,
+      uploadedAt: new Date()
+    });
+
+    await job.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Video uploaded successfully',
+      video: job.haulerVideos[job.haulerVideos.length - 1]
+    });
+  } catch (err) {
+    console.error('Add hauler video error:', err);
+    res.status(500).json({ message: err.message || 'Failed to upload video' });
+  }
+};
+
+exports.deleteHaulerVideo = async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const job = await ClientJob.findById(req.params.id);
+
+    if (!job) {
+      return res.status(404).json({ message: 'Job not found' });
+    }
+
+    if (req.user.role !== 'agent') {
+      return res.status(403).json({ message: 'Agents only' });
+    }
+
+    const videoIndex = job.haulerVideos.findIndex(v => String(v._id) === videoId);
+
+    if (videoIndex === -1) {
+      return res.status(404).json({ message: 'Video not found' });
+    }
+
+    job.haulerVideos.splice(videoIndex, 1);
+    await job.save();
+
+    res.json({
+      success: true,
+      message: 'Video deleted successfully'
+    });
+  } catch (err) {
+    console.error('Delete hauler video error:', err);
+    res.status(500).json({ message: err.message || 'Server error' });
+  }
+};
+
+exports.getHaulerVideos = async (req, res) => {
+  try {
+    const job = await ClientJob.findById(req.params.id)
+      .select('haulerVideos propertyAddress contractSignor')
+      .populate('haulerVideos.uploadedBy', 'name');
+
+    if (!job) {
+      return res.status(404).json({ message: 'Job not found' });
+    }
+
+    res.json({
+      success: true,
+      job: {
+        _id: job._id,
+        propertyAddress: job.propertyAddress,
+        contractSignor: job.contractSignor
+      },
+      videos: job.haulerVideos
+    });
+  } catch (err) {
+    console.error('Get hauler videos error:', err);
     res.status(500).json({ message: err.message || 'Server error' });
   }
 };

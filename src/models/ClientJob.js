@@ -64,6 +64,25 @@ const ClientJobSchema = new mongoose.Schema({
     index: true
   },
 
+  isOnlineSaleActive: {
+    type: Boolean,
+    default: true, 
+  },
+
+  onlineSaleStartDate: { type: Date, default: null },
+  onlineSaleEndDate: { type: Date, default: null },
+  estateSaleDate: { type: Date, default: null },
+  estateSaleStartTime: { type: String, default: '' }, 
+  estateSaleEndTime: { type: String, default: '' },   
+
+  haulerVideos: [{
+    url: { type: String },
+    title: { type: String, default: '' },
+    description: { type: String, default: '' },
+    uploadedAt: { type: Date, default: Date.now },
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }],
+
   finance: {
     gross: { type: Number, default: 0 },
     fees: { type: Number, default: 0 },

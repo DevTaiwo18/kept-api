@@ -1,6 +1,20 @@
 const Item = require('../models/Item');
+const ClientJob = require('../models/ClientJob');
 
-function computeDisplayPrice(item) {
+function computeDisplayPrice(item, job) {
+  const now = new Date();
+  
+  if (job) {
+    const estateSaleDate = job.estateSaleDate ? new Date(job.estateSaleDate) : null;
+    const onlineSaleEndDate = job.onlineSaleEndDate ? new Date(job.onlineSaleEndDate) : null;
+    
+    if (estateSaleDate && now >= estateSaleDate) {
+      if (item.estateSalePrice && !Number.isNaN(item.estateSalePrice)) {
+        return item.estateSalePrice;
+      }
+    }
+  }
+  
   if (typeof item.price === 'number' && !Number.isNaN(item.price)) {
     return item.price;
   }
@@ -11,6 +25,58 @@ function computeDisplayPrice(item) {
   if (high) return high;
   if (low) return low;
   return 0;
+}
+
+async function checkOnlineSaleActive(jobId) {
+  if (!jobId) return true;
+  
+  try {
+    const job = await ClientJob.findById(jobId).lean();
+    return job?.isOnlineSaleActive ?? true;
+  } catch (err) {
+    console.error('Error checking online sale status:', err);
+    return true;
+  }
+}
+
+async function getJobWithSaleInfo(jobId) {
+  if (!jobId) return null;
+  
+  try {
+    const job = await ClientJob.findById(jobId)
+      .select('isOnlineSaleActive onlineSaleStartDate onlineSaleEndDate estateSaleDate estateSaleStartTime estateSaleEndTime')
+      .lean();
+    return job;
+  } catch (err) {
+    console.error('Error fetching job sale info:', err);
+    return null;
+  }
+}
+
+async function checkSaleTimeframe(job) {
+  if (!job) return { isActive: true, phase: 'online' };
+  
+  const now = new Date();
+  
+  const onlineSaleStart = job.onlineSaleStartDate ? new Date(job.onlineSaleStartDate) : null;
+  const onlineSaleEnd = job.onlineSaleEndDate ? new Date(job.onlineSaleEndDate) : null;
+  const estateSaleDate = job.estateSaleDate ? new Date(job.estateSaleDate) : null;
+  
+  if (estateSaleDate && now >= estateSaleDate) {
+    return { isActive: true, phase: 'estate' };
+  }
+  
+  if (onlineSaleStart && now < onlineSaleStart) {
+    return { isActive: false, phase: 'before_online', message: 'Sale has not started yet' };
+  }
+  
+  if (onlineSaleEnd && now > onlineSaleEnd) {
+    if (!estateSaleDate || now < estateSaleDate) {
+      return { isActive: false, phase: 'between', message: 'Online sale has ended' };
+    }
+  }
+  
+  return { isActive: true, phase: 'online' };
 }
 
 exports.listItems = async (req, res) => {
@@ -37,8 +103,16 @@ exports.listItems = async (req, res) => {
 
     let allListings = [];
 
-    docs.forEach(doc => {
-      if (!doc.approvedItems || !doc.approvedItems.length) return;
+    for (const doc of docs) {
+      if (!doc.approvedItems || !doc.approvedItems.length) continue;
+
+      const job = await getJobWithSaleInfo(doc.job);
+      
+      const isOnlineSaleActive = job?.isOnlineSaleActive ?? true;
+      if (!isOnlineSaleActive) continue;
+      
+      const timeframeCheck = await checkSaleTimeframe(job);
+      if (!timeframeCheck.isActive) continue;
 
       const soldIndices = new Set(doc.soldPhotoIndices || []);
 
@@ -59,19 +133,20 @@ exports.listItems = async (req, res) => {
           title: approvedItem.title || '',
           description: approvedItem.description || '',
           category: approvedItem.category || 'Misc',
-          price: computeDisplayPrice(approvedItem),
+          price: computeDisplayPrice(approvedItem, job),
           priceLow: approvedItem.priceLow ?? null,
           priceHigh: approvedItem.priceHigh ?? null,
           photo: photos[0],
           photos: photos,
           allPhotos: doc.photos,
           job: doc.job,
-          createdAt: doc.createdAt
+          createdAt: doc.createdAt,
+          salePhase: timeframeCheck.phase
         };
 
         allListings.push(listing);
       });
-    });
+    }
 
     let filtered = allListings;
 
@@ -130,6 +205,18 @@ exports.getItem = async (req, res) => {
     const doc = await Item.findOne({ _id: itemId, status: 'approved' }).lean();
     if (!doc) return res.status(404).json({ message: 'Item not found' });
 
+    const job = await getJobWithSaleInfo(doc.job);
+    
+    const isOnlineSaleActive = job?.isOnlineSaleActive ?? true;
+    if (!isOnlineSaleActive) {
+      return res.status(404).json({ message: 'Item is not available at this time' });
+    }
+    
+    const timeframeCheck = await checkSaleTimeframe(job);
+    if (!timeframeCheck.isActive) {
+      return res.status(404).json({ message: timeframeCheck.message || 'Item is not available at this time' });
+    }
+
     const soldIndices = new Set(doc.soldPhotoIndices || []);
 
     if (itemNumber !== null) {
@@ -158,14 +245,15 @@ exports.getItem = async (req, res) => {
         title: approvedItem.title || '',
         description: approvedItem.description || '',
         category: approvedItem.category || 'Misc',
-        price: computeDisplayPrice(approvedItem),
+        price: computeDisplayPrice(approvedItem, job),
         priceLow: approvedItem.priceLow ?? null,
         priceHigh: approvedItem.priceHigh ?? null,
         photo: photos[0],
         photos: photos,
         allPhotos: doc.photos,
         job: doc.job,
-        createdAt: doc.createdAt
+        createdAt: doc.createdAt,
+        salePhase: timeframeCheck.phase
       });
     }
 
@@ -190,14 +278,15 @@ exports.getItem = async (req, res) => {
         title: firstAvailable.title || '',
         description: firstAvailable.description || '',
         category: firstAvailable.category || 'Misc',
-        price: computeDisplayPrice(firstAvailable),
+        price: computeDisplayPrice(firstAvailable, job),
         priceLow: firstAvailable.priceLow ?? null,
         priceHigh: firstAvailable.priceHigh ?? null,
         photo: photos[0],
         photos: photos,
         allPhotos: doc.photos,
         job: doc.job,
-        createdAt: doc.createdAt
+        createdAt: doc.createdAt,
+        salePhase: timeframeCheck.phase
       });
     }
 
@@ -236,8 +325,16 @@ exports.getRelated = async (req, res) => {
     let categoryMatches = [];
     let otherItems = [];
 
-    docs.forEach(doc => {
-      if (!doc.approvedItems) return;
+    for (const doc of docs) {
+      if (!doc.approvedItems) continue;
+
+      const job = await getJobWithSaleInfo(doc.job);
+      
+      const isOnlineSaleActive = job?.isOnlineSaleActive ?? true;
+      if (!isOnlineSaleActive) continue;
+      
+      const timeframeCheck = await checkSaleTimeframe(job);
+      if (!timeframeCheck.isActive) continue;
 
       const soldIndices = new Set(doc.soldPhotoIndices || []);
 
@@ -258,7 +355,7 @@ exports.getRelated = async (req, res) => {
           title: approvedItem.title || '',
           category: approvedItem.category || 'Misc',
           description: approvedItem.description || '',
-          price: computeDisplayPrice(approvedItem),
+          price: computeDisplayPrice(approvedItem, job),
           photo: photos[0],
           photos: photos,
           allPhotos: doc.photos
@@ -270,7 +367,7 @@ exports.getRelated = async (req, res) => {
           otherItems.push(listing);
         }
       });
-    });
+    }
 
     let relatedListings = [];
 
@@ -320,8 +417,16 @@ exports.searchItems = async (req, res) => {
 
     let searchResults = [];
 
-    docs.forEach(doc => {
-      if (!doc.approvedItems || !doc.approvedItems.length) return;
+    for (const doc of docs) {
+      if (!doc.approvedItems || !doc.approvedItems.length) continue;
+
+      const job = await getJobWithSaleInfo(doc.job);
+      
+      const isOnlineSaleActive = job?.isOnlineSaleActive ?? true;
+      if (!isOnlineSaleActive) continue;
+      
+      const timeframeCheck = await checkSaleTimeframe(job);
+      if (!timeframeCheck.isActive) continue;
 
       const soldIndices = new Set(doc.soldPhotoIndices || []);
 
@@ -358,7 +463,7 @@ exports.searchItems = async (req, res) => {
           title: approvedItem.title || '',
           description: approvedItem.description || '',
           category: approvedItem.category || 'Misc',
-          price: computeDisplayPrice(approvedItem),
+          price: computeDisplayPrice(approvedItem, job),
           priceLow: approvedItem.priceLow ?? null,
           priceHigh: approvedItem.priceHigh ?? null,
           photo: photos[0],
@@ -371,7 +476,7 @@ exports.searchItems = async (req, res) => {
 
         searchResults.push(listing);
       });
-    });
+    }
 
     let filtered = searchResults;
 
