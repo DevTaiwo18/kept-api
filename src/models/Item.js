@@ -58,10 +58,22 @@ const itemSchema = new mongoose.Schema({
       unit: { type: String, enum: ['lbs', 'kg'], default: 'lbs' }
     },
     material: { type: String },
-    tags: [String]
+    tags: [String],
+    // Item disposition tracking
+    disposition: {
+      type: String,
+      enum: ['available', 'sold', 'donated', 'hauled'],
+      default: 'available'
+    },
+    dispositionAt: { type: Date, default: null },
+    dispositionBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
   }],
   soldPhotoIndices: [Number],
   soldAt: Date,
+  donatedPhotoIndices: [Number],
+  donatedAt: Date,
+  hauledPhotoIndices: [Number],
+  hauledAt: Date,
   status: { 
     type: String, 
     enum: ['draft', 'pending', 'approved', 'needs_review'], 

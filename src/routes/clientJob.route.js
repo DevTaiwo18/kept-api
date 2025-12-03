@@ -22,8 +22,8 @@ router.patch('/:id/toggle-online-sale', allow('agent'), ctrl.toggleOnlineSale);
 
 router.put('/:id/sale-timeframes', allow('agent'), ctrl.updateSaleTimeframes);
 
-router.post('/:id/hauler-videos', 
-  allow('agent'), 
+router.post('/:id/hauler-videos',
+  allow('agent'),
   fileUpload({
     limits: { fileSize: 500 * 1024 * 1024 },
     useTempFiles: true,

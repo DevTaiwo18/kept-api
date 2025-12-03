@@ -44,7 +44,6 @@ const createJobSchema = z.object({
     inventory: z.string().optional(),
     property: z.string().optional(),
   }).partial().optional(),
-  marketingPhotos: z.array(z.string().url()).optional(),
 });
 
 const uploadContractSchema = z.object({
@@ -861,3 +860,4 @@ exports.getHaulerVideos = async (req, res) => {
     res.status(500).json({ message: err.message || 'Server error' });
   }
 };
+

@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { z } = require('zod');
 const { User, ROLES } = require('../models/User');
+const Vendor = require('../models/Vendor');
 const { sendEmail } = require('../utils/sendEmail');
 
 const registerSchema = z.object({
@@ -10,6 +11,20 @@ const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
   role: z.enum(['agent','client','buyer','vendor']).optional().default('client'),
+  // Vendor-specific fields (required when role is vendor)
+  companyName: z.string().min(2).optional(),
+  phone: z.string().min(10).optional(),
+  serviceArea: z.string().min(2).optional(),
+  serviceType: z.enum(['hauling', 'donation', 'both']).optional(),
+}).refine((data) => {
+  // If role is vendor, require vendor-specific fields
+  if (data.role === 'vendor') {
+    return data.companyName && data.phone && data.serviceArea && data.serviceType;
+  }
+  return true;
+}, {
+  message: 'Vendor registration requires companyName, phone, serviceArea, and serviceType',
+  path: ['role']
 });
 
 const loginSchema = z.object({
@@ -97,11 +112,30 @@ exports.register = async (req, res) => {
     const exists = await User.findOne({ email: input.email });
     if (exists) return res.status(409).json({ message: 'Email already in use' });
     const hash = await bcrypt.hash(input.password, 10);
+
+    let vendorProfile = null;
+
+    // Auto-create vendor profile if registering as vendor
+    if (input.role === 'vendor') {
+      const vendor = await Vendor.create({
+        name: input.name,
+        companyName: input.companyName,
+        email: input.email,
+        phone: input.phone,
+        serviceArea: input.serviceArea,
+        serviceType: input.serviceType,
+        type: input.serviceType === 'hauling' ? 'hauler' : input.serviceType === 'donation' ? 'donation_partner' : 'other',
+        active: true
+      });
+      vendorProfile = vendor._id;
+    }
+
     const user = await User.create({
       name: input.name,
       email: input.email,
       passwordHash: hash,
       role: input.role,
+      vendorProfile,
     });
     const token = signToken(user);
 
@@ -137,7 +171,13 @@ exports.register = async (req, res) => {
 
     res.status(201).json({
       token,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role }
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        vendorProfile: user.vendorProfile
+      }
     });
   } catch (err) {
     if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
@@ -156,7 +196,13 @@ exports.login = async (req, res) => {
     const token = signToken(user);
     res.json({
       token,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role }
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        vendorProfile: user.vendorProfile
+      }
     });
   } catch (err) {
     if (err?.issues) return res.status(400).json({ message: 'Invalid input', issues: err.issues });
@@ -167,11 +213,17 @@ exports.login = async (req, res) => {
 
 exports.me = async (req, res) => {
   try {
+    const user = await User.findById(req.user.sub).select('name email role vendorProfile');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
     res.json({
       user: {
-        id: req.user.sub,
-        email: req.user.email,
-        role: req.user.role
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        vendorProfile: user.vendorProfile
       }
     });
   } catch (err) {

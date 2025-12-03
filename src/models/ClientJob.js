@@ -102,7 +102,11 @@ const ClientJobSchema = new mongoose.Schema({
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   }],
 
-  marketingPhotos: [{ type: String }],
+  donationReceipts: [{
+    url: { type: String },
+    uploadedAt: { type: Date, default: Date.now },
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }],
 
   stripe: {
     sessionId: { type: String },

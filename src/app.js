@@ -14,6 +14,7 @@ const webhookRoutes = require('./routes/webhook.route');
 const emailTemplateRoutes = require('./routes/emailTemplates.routes');
 const fileUploadRoutes = require('./routes/fileupload.routes');
 const docusignRoutes = require('./routes/docusign');
+const vendorRoutes = require('./routes/vendor.route');
 
 const app = express();
 
@@ -36,6 +37,7 @@ app.use('/api/checkout', checkoutRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/email-templates', emailTemplateRoutes);
 app.use('/api/docusign', docusignRoutes);
+app.use('/api/vendors', vendorRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, env: process.env.NODE_ENV || 'dev', time: new Date().toISOString() });
