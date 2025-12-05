@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 
 const authRoutes = require('./routes/auth.route');
 const clientJobRoutes = require('./routes/clientJob.route');
@@ -18,9 +20,24 @@ const vendorRoutes = require('./routes/vendor.route');
 
 const app = express();
 
+// Security & performance middleware
 app.use(helmet());
+app.use(compression()); // Gzip compression - reduces response size by 60-70%
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
-app.use(morgan('dev'));
+
+// Rate limiting - protect against abuse
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' }
+});
+app.use('/api/', limiter);
+
+// Logging - use 'combined' format in production for better performance
+const isProduction = process.env.NODE_ENV === 'production';
+app.use(morgan(isProduction ? 'combined' : 'dev'));
 
 app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes);
 

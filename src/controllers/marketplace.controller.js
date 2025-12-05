@@ -1,20 +1,47 @@
 const Item = require('../models/Item');
 const ClientJob = require('../models/ClientJob');
+const mongoose = require('mongoose');
+
+// Cache for active jobs - refreshes every 60 seconds
+let jobCache = new Map();
+let jobCacheTimestamp = 0;
+const JOB_CACHE_TTL = 60000; // 60 seconds
+
+async function getActiveJobsMap() {
+  const now = Date.now();
+  if (now - jobCacheTimestamp < JOB_CACHE_TTL && jobCache.size > 0) {
+    return jobCache;
+  }
+
+  const jobs = await ClientJob.find({
+    isOnlineSaleActive: { $ne: false }
+  })
+    .select('_id isOnlineSaleActive onlineSaleStartDate onlineSaleEndDate estateSaleDate')
+    .lean();
+
+  const newCache = new Map();
+  for (const job of jobs) {
+    newCache.set(job._id.toString(), job);
+  }
+
+  jobCache = newCache;
+  jobCacheTimestamp = now;
+  return jobCache;
+}
 
 function computeDisplayPrice(item, job) {
   const now = new Date();
-  
+
   if (job) {
     const estateSaleDate = job.estateSaleDate ? new Date(job.estateSaleDate) : null;
-    const onlineSaleEndDate = job.onlineSaleEndDate ? new Date(job.onlineSaleEndDate) : null;
-    
+
     if (estateSaleDate && now >= estateSaleDate) {
       if (item.estateSalePrice && !Number.isNaN(item.estateSalePrice)) {
         return item.estateSalePrice;
       }
     }
   }
-  
+
   if (typeof item.price === 'number' && !Number.isNaN(item.price)) {
     return item.price;
   }
@@ -27,56 +54,42 @@ function computeDisplayPrice(item, job) {
   return 0;
 }
 
-async function checkOnlineSaleActive(jobId) {
-  if (!jobId) return true;
-  
-  try {
-    const job = await ClientJob.findById(jobId).lean();
-    return job?.isOnlineSaleActive ?? true;
-  } catch (err) {
-    console.error('Error checking online sale status:', err);
-    return true;
-  }
-}
-
-async function getJobWithSaleInfo(jobId) {
-  if (!jobId) return null;
-  
-  try {
-    const job = await ClientJob.findById(jobId)
-      .select('isOnlineSaleActive onlineSaleStartDate onlineSaleEndDate estateSaleDate estateSaleStartTime estateSaleEndTime')
-      .lean();
-    return job;
-  } catch (err) {
-    console.error('Error fetching job sale info:', err);
-    return null;
-  }
-}
-
-async function checkSaleTimeframe(job) {
+function checkSaleTimeframe(job) {
   if (!job) return { isActive: true, phase: 'online' };
-  
+
   const now = new Date();
-  
+
   const onlineSaleStart = job.onlineSaleStartDate ? new Date(job.onlineSaleStartDate) : null;
   const onlineSaleEnd = job.onlineSaleEndDate ? new Date(job.onlineSaleEndDate) : null;
   const estateSaleDate = job.estateSaleDate ? new Date(job.estateSaleDate) : null;
-  
+
   if (estateSaleDate && now >= estateSaleDate) {
     return { isActive: true, phase: 'estate' };
   }
-  
+
   if (onlineSaleStart && now < onlineSaleStart) {
     return { isActive: false, phase: 'before_online', message: 'Sale has not started yet' };
   }
-  
+
   if (onlineSaleEnd && now > onlineSaleEnd) {
     if (!estateSaleDate || now < estateSaleDate) {
       return { isActive: false, phase: 'between', message: 'Online sale has ended' };
     }
   }
-  
+
   return { isActive: true, phase: 'online' };
+}
+
+async function getJobWithSaleInfo(jobId) {
+  if (!jobId) return null;
+
+  try {
+    const jobsMap = await getActiveJobsMap();
+    return jobsMap.get(jobId.toString()) || null;
+  } catch (err) {
+    console.error('Error fetching job sale info:', err);
+    return null;
+  }
 }
 
 exports.listItems = async (req, res) => {
@@ -92,48 +105,75 @@ exports.listItems = async (req, res) => {
     const min = req.query.min ? Number(req.query.min) : null;
     const max = req.query.max ? Number(req.query.max) : null;
 
-    const base = {
+    // Pre-load all active jobs in one query (cached)
+    const jobsMap = await getActiveJobsMap();
+    const activeJobIds = Array.from(jobsMap.keys());
+
+    // Build aggregation pipeline for server-side filtering
+    const matchStage = {
       status: 'approved',
       approvedItems: { $exists: true, $ne: [] }
     };
 
-    if (jobId) base.job = jobId;
+    // Only include items from active jobs
+    if (jobId) {
+      matchStage.job = new mongoose.Types.ObjectId(jobId);
+    } else if (activeJobIds.length > 0) {
+      matchStage.job = { $in: activeJobIds.map(id => new mongoose.Types.ObjectId(id)) };
+    }
 
-    const docs = await Item.find(base).sort({ createdAt: -1 }).lean();
+    // Use aggregation for better performance
+    const docs = await Item.find(matchStage)
+      .select('_id job photos approvedItems soldPhotoIndices createdAt')
+      .sort({ createdAt: -1 })
+      .lean();
 
     let allListings = [];
 
     for (const doc of docs) {
       if (!doc.approvedItems || !doc.approvedItems.length) continue;
 
-      const job = await getJobWithSaleInfo(doc.job);
-      
+      const job = doc.job ? jobsMap.get(doc.job.toString()) : null;
+
       const isOnlineSaleActive = job?.isOnlineSaleActive ?? true;
       if (!isOnlineSaleActive) continue;
-      
-      const timeframeCheck = await checkSaleTimeframe(job);
+
+      const timeframeCheck = checkSaleTimeframe(job);
       if (!timeframeCheck.isActive) continue;
 
       const soldIndices = new Set(doc.soldPhotoIndices || []);
 
-      doc.approvedItems.forEach(approvedItem => {
+      for (const approvedItem of doc.approvedItems) {
         const photoIndices = approvedItem.photoIndices || [approvedItem.photoIndex];
 
         const isSold = photoIndices.some(idx => soldIndices.has(idx));
-        if (isSold) return;
+        if (isSold) continue;
 
         const photos = photoIndices.map(idx => doc.photos[idx]).filter(Boolean);
-        if (photos.length === 0) return;
+        if (photos.length === 0) continue;
 
-        const listing = {
+        // Apply filters early to reduce memory
+        const itemCategory = approvedItem.category || 'Misc';
+        if (category && itemCategory.toLowerCase() !== category.toLowerCase()) continue;
+
+        if (q) {
+          const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+          if (!rx.test(approvedItem.title || '') && !rx.test(approvedItem.description || '')) continue;
+        }
+
+        const price = computeDisplayPrice(approvedItem, job);
+        if (min !== null && price < min) continue;
+        if (max !== null && price > max) continue;
+
+        allListings.push({
           _id: `${doc._id}_${approvedItem.itemNumber}`,
           itemId: doc._id,
           itemNumber: approvedItem.itemNumber,
           photoIndices: photoIndices,
           title: approvedItem.title || '',
           description: approvedItem.description || '',
-          category: approvedItem.category || 'Misc',
-          price: computeDisplayPrice(approvedItem, job),
+          category: itemCategory,
+          price,
           priceLow: approvedItem.priceLow ?? null,
           priceHigh: approvedItem.priceHigh ?? null,
           photo: photos[0],
@@ -142,46 +182,23 @@ exports.listItems = async (req, res) => {
           job: doc.job,
           createdAt: doc.createdAt,
           salePhase: timeframeCheck.phase
-        };
-
-        allListings.push(listing);
-      });
+        });
+      }
     }
 
-    let filtered = allListings;
+    const total = allListings.length;
 
-    if (category) {
-      filtered = filtered.filter(item =>
-        item.category.toLowerCase() === category.toLowerCase()
-      );
-    }
-
-    if (q) {
-      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      filtered = filtered.filter(item =>
-        rx.test(item.title) || rx.test(item.description)
-      );
-    }
-
-    if (min !== null || max !== null) {
-      filtered = filtered.filter(item => {
-        if (min !== null && item.price < min) return false;
-        if (max !== null && item.price > max) return false;
-        return true;
-      });
-    }
-
-    const total = filtered.length;
-
+    // Sort
     if (sortKey === 'price_asc') {
-      filtered.sort((a, b) => a.price - b.price);
+      allListings.sort((a, b) => a.price - b.price);
     } else if (sortKey === 'price_desc') {
-      filtered.sort((a, b) => b.price - a.price);
-    } else if (sortKey === 'new') {
-      filtered.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      allListings.sort((a, b) => b.price - a.price);
+    } else {
+      allListings.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     }
 
-    const paginated = filtered.slice(skip, skip + limit);
+    // Paginate
+    const paginated = allListings.slice(skip, skip + limit);
 
     res.json({
       page,
@@ -303,7 +320,9 @@ exports.getRelated = async (req, res) => {
     const itemId = parts[0];
     const itemNumber = parts.length > 1 ? parseInt(parts[1], 10) : null;
 
-    const current = await Item.findOne({ _id: itemId, status: 'approved' }).lean();
+    const current = await Item.findOne({ _id: itemId, status: 'approved' })
+      .select('approvedItems')
+      .lean();
     if (!current) return res.status(404).json({ message: 'Item not found' });
 
     let targetCategory = null;
@@ -314,13 +333,25 @@ exports.getRelated = async (req, res) => {
       targetCategory = approvedItem?.category;
     }
 
+    // Pre-load jobs (cached)
+    const jobsMap = await getActiveJobsMap();
+    const activeJobIds = Array.from(jobsMap.keys());
+
     const base = {
       status: 'approved',
       approvedItems: { $exists: true, $ne: [] },
       _id: { $ne: current._id }
     };
 
-    const docs = await Item.find(base).sort({ createdAt: -1 }).limit(50).lean();
+    if (activeJobIds.length > 0) {
+      base.job = { $in: activeJobIds.map(id => new mongoose.Types.ObjectId(id)) };
+    }
+
+    const docs = await Item.find(base)
+      .select('_id job photos approvedItems soldPhotoIndices')
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
 
     let categoryMatches = [];
     let otherItems = [];
@@ -328,24 +359,24 @@ exports.getRelated = async (req, res) => {
     for (const doc of docs) {
       if (!doc.approvedItems) continue;
 
-      const job = await getJobWithSaleInfo(doc.job);
-      
+      const job = doc.job ? jobsMap.get(doc.job.toString()) : null;
+
       const isOnlineSaleActive = job?.isOnlineSaleActive ?? true;
       if (!isOnlineSaleActive) continue;
-      
-      const timeframeCheck = await checkSaleTimeframe(job);
+
+      const timeframeCheck = checkSaleTimeframe(job);
       if (!timeframeCheck.isActive) continue;
 
       const soldIndices = new Set(doc.soldPhotoIndices || []);
 
-      doc.approvedItems.forEach(approvedItem => {
+      for (const approvedItem of doc.approvedItems) {
         const photoIndices = approvedItem.photoIndices || [approvedItem.photoIndex];
         const isSold = photoIndices.some(idx => soldIndices.has(idx));
 
-        if (isSold) return;
+        if (isSold) continue;
 
         const photos = photoIndices.map(idx => doc.photos[idx]).filter(Boolean);
-        if (photos.length === 0) return;
+        if (photos.length === 0) continue;
 
         const listing = {
           _id: `${doc._id}_${approvedItem.itemNumber}`,
@@ -366,7 +397,7 @@ exports.getRelated = async (req, res) => {
         } else {
           otherItems.push(listing);
         }
-      });
+      }
     }
 
     let relatedListings = [];
@@ -406,48 +437,65 @@ exports.searchItems = async (req, res) => {
     const min = req.query.min ? Number(req.query.min) : null;
     const max = req.query.max ? Number(req.query.max) : null;
 
+    // Pre-load jobs (cached)
+    const jobsMap = await getActiveJobsMap();
+    const activeJobIds = Array.from(jobsMap.keys());
+
     const base = {
       status: 'approved',
       approvedItems: { $exists: true, $ne: [] }
     };
 
-    const docs = await Item.find(base).lean();
+    if (activeJobIds.length > 0) {
+      base.job = { $in: activeJobIds.map(id => new mongoose.Types.ObjectId(id)) };
+    }
+
+    const docs = await Item.find(base)
+      .select('_id job photos approvedItems soldPhotoIndices createdAt')
+      .lean();
 
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const queryLower = q.toLowerCase();
 
     let searchResults = [];
 
     for (const doc of docs) {
       if (!doc.approvedItems || !doc.approvedItems.length) continue;
 
-      const job = await getJobWithSaleInfo(doc.job);
-      
+      const job = doc.job ? jobsMap.get(doc.job.toString()) : null;
+
       const isOnlineSaleActive = job?.isOnlineSaleActive ?? true;
       if (!isOnlineSaleActive) continue;
-      
-      const timeframeCheck = await checkSaleTimeframe(job);
+
+      const timeframeCheck = checkSaleTimeframe(job);
       if (!timeframeCheck.isActive) continue;
 
       const soldIndices = new Set(doc.soldPhotoIndices || []);
 
-      doc.approvedItems.forEach(approvedItem => {
+      for (const approvedItem of doc.approvedItems) {
         const photoIndices = approvedItem.photoIndices || [approvedItem.photoIndex];
         const isSold = photoIndices.some(idx => soldIndices.has(idx));
 
-        if (isSold) return;
+        if (isSold) continue;
 
         const titleMatch = rx.test(approvedItem.title || '');
         const descMatch = rx.test(approvedItem.description || '');
 
-        if (!titleMatch && !descMatch) return;
+        if (!titleMatch && !descMatch) continue;
 
         const photos = photoIndices.map(idx => doc.photos[idx]).filter(Boolean);
-        if (photos.length === 0) return;
+        if (photos.length === 0) continue;
+
+        // Apply category filter early
+        const itemCategory = approvedItem.category || 'Misc';
+        if (category && itemCategory.toLowerCase() !== category.toLowerCase()) continue;
+
+        const price = computeDisplayPrice(approvedItem, job);
+        if (min !== null && price < min) continue;
+        if (max !== null && price > max) continue;
 
         let relevanceScore = 0;
         const titleLower = (approvedItem.title || '').toLowerCase();
-        const descLower = (approvedItem.description || '').toLowerCase();
-        const queryLower = q.toLowerCase();
 
         if (titleLower === queryLower) relevanceScore += 100;
         else if (titleLower.startsWith(queryLower)) relevanceScore += 50;
@@ -455,15 +503,15 @@ exports.searchItems = async (req, res) => {
 
         if (descMatch) relevanceScore += 10;
 
-        const listing = {
+        searchResults.push({
           _id: `${doc._id}_${approvedItem.itemNumber}`,
           itemId: doc._id,
           itemNumber: approvedItem.itemNumber,
           photoIndices: photoIndices,
           title: approvedItem.title || '',
           description: approvedItem.description || '',
-          category: approvedItem.category || 'Misc',
-          price: computeDisplayPrice(approvedItem, job),
+          category: itemCategory,
+          price,
           priceLow: approvedItem.priceLow ?? null,
           priceHigh: approvedItem.priceHigh ?? null,
           photo: photos[0],
@@ -472,46 +520,25 @@ exports.searchItems = async (req, res) => {
           job: doc.job,
           createdAt: doc.createdAt,
           relevanceScore
-        };
-
-        searchResults.push(listing);
-      });
+        });
+      }
     }
 
-    let filtered = searchResults;
+    const total = searchResults.length;
 
-    if (category) {
-      filtered = filtered.filter(item =>
-        item.category.toLowerCase() === category.toLowerCase()
-      );
-    }
-
-    if (min !== null || max !== null) {
-      filtered = filtered.filter(item => {
-        if (min !== null && item.price < min) return false;
-        if (max !== null && item.price > max) return false;
-        return true;
-      });
-    }
-
-    const total = filtered.length;
-
+    // Sort
     if (sortKey === 'relevance') {
-      filtered.sort((a, b) => b.relevanceScore - a.relevanceScore);
+      searchResults.sort((a, b) => b.relevanceScore - a.relevanceScore);
     } else if (sortKey === 'price_asc') {
-      filtered.sort((a, b) => a.price - b.price);
+      searchResults.sort((a, b) => a.price - b.price);
     } else if (sortKey === 'price_desc') {
-      filtered.sort((a, b) => b.price - a.price);
+      searchResults.sort((a, b) => b.price - a.price);
     } else if (sortKey === 'new') {
-      filtered.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      searchResults.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     }
 
-    filtered = filtered.map(item => {
-      const { relevanceScore, ...rest } = item;
-      return rest;
-    });
-
-    const paginated = filtered.slice(skip, skip + limit);
+    // Remove relevanceScore before returning
+    const paginated = searchResults.slice(skip, skip + limit).map(({ relevanceScore, ...rest }) => rest);
 
     res.json({
       query: q,

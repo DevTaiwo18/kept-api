@@ -1,0 +1,58 @@
+services:
+  - type: web
+    name: kept-api
+    runtime: node
+    region: oregon
+    plan: standard  # $25/month - 1 GB RAM, 1 CPU
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: MONGODB_URI
+        sync: false  # Set manually in Render dashboard for security
+      - key: JWT_SECRET
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASS
+        sync: false
+      - key: DOCUSIGN_INTEGRATION_KEY
+        sync: false
+      - key: DOCUSIGN_USER_ID
+        sync: false
+      - key: DOCUSIGN_ACCOUNT_ID
+        sync: false
+      - key: DOCUSIGN_BASE_PATH
+        sync: false
+      - key: DOCUSIGN_PRIVATE_KEY
+        sync: false
+      - key: FEDEX_API_KEY
+        sync: false
+      - key: FEDEX_SECRET_KEY
+        sync: false
+      - key: FEDEX_ACCOUNT_NUMBER
+        sync: false
+    autoDeploy: true  # Auto-deploy on push to main
+    scaling:
+      minInstances: 1
+      maxInstances: 3  # Scale up to 3 instances under load
+      targetMemoryPercent: 80
+      targetCPUPercent: 80
