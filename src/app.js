@@ -23,7 +23,24 @@ const app = express();
 // Security & performance middleware
 app.use(helmet());
 app.use(compression()); // Gzip compression - reduces response size by 60-70%
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+
+// CORS - allow multiple origins
+const allowedOrigins = [
+  'https://keptestate.com',
+  'https://www.keptestate.com',
+  'https://kept-frontend-eta.vercel.app'
+];
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, etc.)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(null, false);
+  },
+  credentials: true
+}));
 
 // Rate limiting - protect against abuse
 const limiter = rateLimit({
