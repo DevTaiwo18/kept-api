@@ -8,13 +8,20 @@ const DOCUSIGN_INTEGRATION_KEY = process.env.DOCUSIGN_INTEGRATION_KEY;
 const DOCUSIGN_USER_ID = process.env.DOCUSIGN_USER_ID;
 const DOCUSIGN_ACCOUNT_ID = process.env.DOCUSIGN_ACCOUNT_ID;
 const DOCUSIGN_PRIVATE_KEY_PATH = process.env.DOCUSIGN_PRIVATE_KEY_PATH;
+const DOCUSIGN_PRIVATE_KEY = process.env.DOCUSIGN_PRIVATE_KEY;
 const DOCUSIGN_BASE_PATH = process.env.DOCUSIGN_BASE_PATH;
 
 const getApiClient = async () => {
   const apiClient = new docusign.ApiClient();
   apiClient.setBasePath(DOCUSIGN_BASE_PATH);
 
-  const privateKey = fs.readFileSync(path.resolve(DOCUSIGN_PRIVATE_KEY_PATH), 'utf8');
+  // Support both: env variable (for production) or file path (for local dev)
+  let privateKey;
+  if (DOCUSIGN_PRIVATE_KEY) {
+    privateKey = DOCUSIGN_PRIVATE_KEY.replace(/\\n/g, '\n');
+  } else {
+    privateKey = fs.readFileSync(path.resolve(DOCUSIGN_PRIVATE_KEY_PATH), 'utf8');
+  }
   
   const results = await apiClient.requestJWTUserToken(
     DOCUSIGN_INTEGRATION_KEY,
