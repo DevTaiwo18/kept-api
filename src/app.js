@@ -17,22 +17,22 @@ const emailTemplateRoutes = require('./routes/emailTemplates.routes');
 const fileUploadRoutes = require('./routes/fileupload.routes');
 const docusignRoutes = require('./routes/docusign');
 const vendorRoutes = require('./routes/vendor.route');
+const crmRoutes = require('./routes/crm.route');
 
 const app = express();
 
-// Security & performance middleware
 app.use(helmet());
-app.use(compression()); // Gzip compression - reduces response size by 60-70%
+app.use(compression());
 
-// CORS - allow multiple origins
 const allowedOrigins = [
   'https://keptestate.com',
   'https://www.keptestate.com',
-  'https://kept-frontend-eta.vercel.app'
+  'https://kept-frontend-eta.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000'
 ];
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
@@ -42,17 +42,15 @@ app.use(cors({
   credentials: true
 }));
 
-// Rate limiting - protect against abuse
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' }
 });
 app.use('/api/', limiter);
 
-// Logging - use 'combined' format in production for better performance
 const isProduction = process.env.NODE_ENV === 'production';
 app.use(morgan(isProduction ? 'combined' : 'dev'));
 
@@ -72,6 +70,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/email-templates', emailTemplateRoutes);
 app.use('/api/docusign', docusignRoutes);
 app.use('/api/vendors', vendorRoutes);
+app.use('/api/crm', crmRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, env: process.env.NODE_ENV || 'dev', time: new Date().toISOString() });
