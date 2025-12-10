@@ -78,34 +78,58 @@ exports.sendContractForSigning = async (req, res) => {
           routingOrder: '1',
           clientUserId: job.client._id.toString(),
           tabs: {
-            signHereTabs: [{
-              documentId: '1',
-              pageNumber: '1',
-              xPosition: '100',
-              yPosition: '600',
-              tabLabel: 'Client Signature'
-            }],
-            textTabs: [{
-              documentId: '1',
-              pageNumber: '1',
-              xPosition: '100',
-              yPosition: '150',
-              width: '200',
-              height: '20',
-              tabLabel: 'Client Name',
-              value: job.client.name,
-              locked: 'false',
-              required: 'true'
-            }],
-            dateSignedTabs: [{
-              documentId: '1',
-              pageNumber: '1',
-              xPosition: '100',
-              yPosition: '200',
-              width: '100',
-              height: '20',
-              tabLabel: 'Date Signed'
-            }]
+            signHereTabs: [
+              {
+                documentId: '1',
+                anchorString: 'Client Signature:',
+                anchorUnits: 'pixels',
+                anchorXOffset: '160',
+                anchorYOffset: '-10',
+                tabLabel: 'Client Signature'
+              },
+              {
+                documentId: '1',
+                anchorString: 'Seller Signature',
+                anchorUnits: 'pixels',
+                anchorXOffset: '160',
+                anchorYOffset: '-30',
+                tabLabel: 'Seller Signature'
+              },
+              {
+                documentId: '1',
+                anchorString: 'Owner Signature',
+                anchorUnits: 'pixels',
+                anchorXOffset: '160',
+                anchorYOffset: '-30',
+                tabLabel: 'Owner Signature'
+              }
+            ],
+            dateSignedTabs: [
+              {
+                documentId: '1',
+                anchorString: 'Client Signature:',
+                anchorUnits: 'pixels',
+                anchorXOffset: '400',
+                anchorYOffset: '-10',
+                tabLabel: 'Client Date'
+              },
+              {
+                documentId: '1',
+                anchorString: 'Seller Signature',
+                anchorUnits: 'pixels',
+                anchorXOffset: '400',
+                anchorYOffset: '-30',
+                tabLabel: 'Seller Date'
+              },
+              {
+                documentId: '1',
+                anchorString: 'Owner Signature',
+                anchorUnits: 'pixels',
+                anchorXOffset: '400',
+                anchorYOffset: '-30',
+                tabLabel: 'Owner Date'
+              }
+            ]
           }
         }]
       },
