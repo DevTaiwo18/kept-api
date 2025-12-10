@@ -5,6 +5,32 @@ const GHL_BASE_URL = 'https://services.leadconnectorhq.com';
 const GHL_API_TOKEN = process.env.GHL_API_TOKEN;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 
+function applyFilters(contacts, { type, search, tags }) {
+  let filtered = contacts;
+
+  if (type && type !== 'all') {
+    filtered = filtered.filter(c => c.type === type);
+  }
+
+  if (search) {
+    const searchLower = search.toLowerCase();
+    filtered = filtered.filter(c =>
+      (c.contactName && c.contactName.toLowerCase().includes(searchLower)) ||
+      (c.email && c.email.toLowerCase().includes(searchLower)) ||
+      (c.phone && c.phone.includes(search))
+    );
+  }
+
+  if (tags) {
+    const tagList = tags.split(',').map(t => t.trim().toLowerCase());
+    filtered = filtered.filter(c =>
+      c.tags && c.tags.some(tag => tagList.includes(tag.toLowerCase()))
+    );
+  }
+
+  return filtered;
+}
+
 exports.getContacts = async (req, res) => {
   try {
     const {
@@ -13,8 +39,54 @@ exports.getContacts = async (req, res) => {
       startAfterId,
       type,
       search,
-      tags
+      tags,
+      fetchAll
     } = req.query;
+
+    let allContacts = [];
+    let nextStartAfter = startAfter;
+    let nextStartAfterId = startAfterId;
+    let hasMore = true;
+
+    if (fetchAll === 'true') {
+      while (hasMore) {
+        let url = `${GHL_BASE_URL}/contacts/?locationId=${GHL_LOCATION_ID}&limit=100`;
+
+        if (nextStartAfter && nextStartAfterId) {
+          url += `&startAfter=${nextStartAfter}&startAfterId=${nextStartAfterId}`;
+        }
+
+        const response = await axios.get(url, {
+          headers: {
+            'Authorization': `Bearer ${GHL_API_TOKEN}`,
+            'Version': '2021-07-28',
+            'Accept': 'application/json'
+          }
+        });
+
+        const contacts = response.data.contacts || [];
+        allContacts = [...allContacts, ...contacts];
+
+        if (response.data.meta?.startAfterId && response.data.meta?.startAfter) {
+          nextStartAfter = response.data.meta.startAfter;
+          nextStartAfterId = response.data.meta.startAfterId;
+        } else {
+          hasMore = false;
+        }
+
+        if (allContacts.length >= 5000) {
+          hasMore = false;
+        }
+      }
+
+      let filteredContacts = applyFilters(allContacts, { type, search, tags });
+
+      return res.json({
+        contacts: filteredContacts,
+        meta: { total: allContacts.length },
+        total: allContacts.length
+      });
+    }
 
     let url = `${GHL_BASE_URL}/contacts/?locationId=${GHL_LOCATION_ID}&limit=${limit}`;
 
@@ -31,26 +103,7 @@ exports.getContacts = async (req, res) => {
     });
 
     let contacts = response.data.contacts || [];
-
-    if (type && type !== 'all') {
-      contacts = contacts.filter(c => c.type === type);
-    }
-
-    if (search) {
-      const searchLower = search.toLowerCase();
-      contacts = contacts.filter(c =>
-        (c.contactName && c.contactName.toLowerCase().includes(searchLower)) ||
-        (c.email && c.email.toLowerCase().includes(searchLower)) ||
-        (c.phone && c.phone.includes(search))
-      );
-    }
-
-    if (tags) {
-      const tagList = tags.split(',').map(t => t.trim().toLowerCase());
-      contacts = contacts.filter(c =>
-        c.tags && c.tags.some(tag => tagList.includes(tag.toLowerCase()))
-      );
-    }
+    contacts = applyFilters(contacts, { type, search, tags });
 
     res.json({
       contacts,
