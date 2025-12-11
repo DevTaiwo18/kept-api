@@ -228,17 +228,21 @@ exports.sendBulkEmail = async (req, res) => {
 
     const emailHtml = htmlContent || generateEmailTemplate(message);
 
-    const emailPromises = contactsWithEmail.map(contact =>
-      sendEmail({
+    const emailPromises = contactsWithEmail.map(contact => {
+      const contactName = contact.firstName || contact.contactName || 'Valued Customer';
+      const personalizedHtml = emailHtml.replace(/\{\{name\}\}/g, contactName);
+      const personalizedText = `Hi ${contactName},\n\n${message.replace(/\{\{name\}\}/g, contactName)}`;
+
+      return sendEmail({
         to: contact.email,
         subject,
-        html: emailHtml.replace('{{name}}', contact.firstName || contact.contactName || 'Valued Customer'),
-        text: message.replace('{{name}}', contact.firstName || contact.contactName || 'Valued Customer')
+        html: personalizedHtml,
+        text: personalizedText
       }).catch(err => {
         console.error(`Failed to send email to ${contact.email}:`, err.message);
         return { error: true, email: contact.email };
-      })
-    );
+      });
+    });
 
     const results = await Promise.all(emailPromises);
     const failures = results.filter(r => r && r.error);
