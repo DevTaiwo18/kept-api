@@ -272,18 +272,22 @@ exports.updateOrderStatus = async (req, res) => {
     
     await order.save();
     
+    // Get email from user or stripe customerEmail as fallback
+    const buyerEmail = order.user?.email || order.stripe?.customerEmail || order.deliveryDetails?.email;
+    const buyerName = order.user?.name || order.deliveryDetails?.fullName || 'Customer';
+
     console.log('>>> Order status update - checking email send');
     console.log('>>> fulfillmentStatus:', fulfillmentStatus);
     console.log('>>> oldStatus:', oldStatus);
-    console.log('>>> order.user:', order.user);
-    console.log('>>> order.user?.email:', order.user?.email);
+    console.log('>>> buyerEmail:', buyerEmail);
+    console.log('>>> buyerName:', buyerName);
 
-    if (fulfillmentStatus && fulfillmentStatus !== oldStatus && order.user?.email) {
-      console.log('>>> Sending status update email to:', order.user.email);
+    if (fulfillmentStatus && fulfillmentStatus !== oldStatus && buyerEmail) {
+      console.log('>>> Sending status update email to:', buyerEmail);
       try {
         await sendOrderStatusEmail({
-          buyerEmail: order.user.email,
-          buyerName: order.user.name || 'Customer',
+          buyerEmail,
+          buyerName,
           orderNumber: order._id.toString().slice(-8).toUpperCase(),
           oldStatus,
           newStatus: fulfillmentStatus,
@@ -297,7 +301,7 @@ exports.updateOrderStatus = async (req, res) => {
       console.log('>>> Email NOT sent - missing condition');
       if (!fulfillmentStatus) console.log('>>>   - No fulfillmentStatus');
       if (fulfillmentStatus === oldStatus) console.log('>>>   - Status unchanged');
-      if (!order.user?.email) console.log('>>>   - No user email');
+      if (!buyerEmail) console.log('>>>   - No buyer email found');
     }
     
     res.json({ 
