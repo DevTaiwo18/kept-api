@@ -276,14 +276,7 @@ exports.updateOrderStatus = async (req, res) => {
     const buyerEmail = order.user?.email || order.stripe?.customerEmail || order.deliveryDetails?.email;
     const buyerName = order.user?.name || order.deliveryDetails?.fullName || 'Customer';
 
-    console.log('>>> Order status update - checking email send');
-    console.log('>>> fulfillmentStatus:', fulfillmentStatus);
-    console.log('>>> oldStatus:', oldStatus);
-    console.log('>>> buyerEmail:', buyerEmail);
-    console.log('>>> buyerName:', buyerName);
-
     if (fulfillmentStatus && fulfillmentStatus !== oldStatus && buyerEmail) {
-      console.log('>>> Sending status update email to:', buyerEmail);
       try {
         await sendOrderStatusEmail({
           buyerEmail,
@@ -293,15 +286,9 @@ exports.updateOrderStatus = async (req, res) => {
           newStatus: fulfillmentStatus,
           trackingNumber: trackingNumber || order.shippingDetails?.trackingNumber,
         });
-        console.log('>>> Status email sent successfully');
       } catch (emailErr) {
         console.error('Failed to send order status email:', emailErr);
       }
-    } else {
-      console.log('>>> Email NOT sent - missing condition');
-      if (!fulfillmentStatus) console.log('>>>   - No fulfillmentStatus');
-      if (fulfillmentStatus === oldStatus) console.log('>>>   - Status unchanged');
-      if (!buyerEmail) console.log('>>>   - No buyer email found');
     }
     
     res.json({ 

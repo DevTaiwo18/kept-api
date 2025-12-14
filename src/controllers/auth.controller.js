@@ -140,7 +140,6 @@ exports.register = async (req, res) => {
     const token = signToken(user);
 
     try {
-      console.log('>>> Sending welcome email to:', user.email);
       const content = `
         <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
           Welcome to Kept House! We're excited to have you on board.
@@ -166,7 +165,6 @@ exports.register = async (req, res) => {
         html: getEmailTemplate(user.name, content),
         text: `Hi ${user.name}, Welcome to Kept House! We're excited to have you on board. Your account has been successfully created with the role of ${input.role}. Account Details: Email: ${user.email}, Role: ${user.role}. You can now log in and start exploring all the features we have to offer. Best regards, The Kept House Team`,
       });
-      console.log('>>> Welcome email sent successfully');
     } catch (emailErr) {
       console.error('Failed to send welcome email:', emailErr);
     }
