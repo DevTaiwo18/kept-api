@@ -21,6 +21,8 @@ const crmRoutes = require('./routes/crm.route');
 
 const app = express();
 
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(compression());
 
