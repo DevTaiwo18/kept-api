@@ -71,9 +71,15 @@ function checkSaleTimeframe(job) {
     return { isActive: false, phase: 'before_online', message: 'Sale has not started yet' };
   }
 
-  if (onlineSaleEnd && now > onlineSaleEnd) {
-    if (!estateSaleDate || now < estateSaleDate) {
-      return { isActive: false, phase: 'between', message: 'Online sale has ended' };
+  if (onlineSaleEnd) {
+    // Include the full end day (until 11:59:59 PM)
+    const endOfDay = new Date(onlineSaleEnd);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    if (now > endOfDay) {
+      if (!estateSaleDate || now < estateSaleDate) {
+        return { isActive: false, phase: 'between', message: 'Online sale has ended' };
+      }
     }
   }
 
