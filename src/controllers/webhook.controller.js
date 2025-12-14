@@ -159,8 +159,11 @@ async function sendAgentOrderNotification(order) {
 }
 
 exports.stripeWebhook = async (req, res) => {
+  console.log('=== STRIPE WEBHOOK RECEIVED ===');
   const sig = req.headers['stripe-signature'];
-  
+  console.log('Signature present:', !!sig);
+  console.log('Webhook secret configured:', !!process.env.STRIPE_WEBHOOK_SECRET);
+
   let event;
   try {
     event = stripe.webhooks.constructEvent(
@@ -168,30 +171,38 @@ exports.stripeWebhook = async (req, res) => {
       sig,
       process.env.STRIPE_WEBHOOK_SECRET
     );
+    console.log('Webhook event verified successfully');
+    console.log('Event type:', event.type);
   } catch (err) {
+    console.error('Webhook signature verification failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const metadata = session.metadata || {};
-    
+    console.log('Session metadata:', metadata);
+
     if (metadata.depositType === 'initial_deposit') {
       const jobId = metadata.jobId;
-      
+      console.log('Processing DEPOSIT for job:', jobId);
+
       try {
         const job = await ClientJob.findById(jobId);
-        
+
         if (!job) {
+          console.log('Job not found:', jobId);
           return res.json({ received: true });
         }
-        
+
         if (job.status === 'active' && job.depositPaidAt) {
+          console.log('Job already active, skipping');
           return res.json({ received: true });
         }
 
         const depositAmount = parseFloat(metadata.depositAmount);
         const serviceFee = parseFloat(metadata.serviceFee);
+        console.log('Deposit amount:', depositAmount, 'Service fee:', serviceFee);
 
         job.depositAmount = depositAmount;
         job.depositPaidAt = new Date();
@@ -207,9 +218,10 @@ exports.stripeWebhook = async (req, res) => {
         job.finance.net = (job.finance.gross || 0) - serviceFee - keptHouseCommission - haulingCost + depositAmount;
 
         await job.save();
+        console.log('Job updated successfully! Status:', job.status);
 
         return res.json({ received: true });
-        
+
       } catch (e) {
         console.error('Deposit webhook error:', e);
         return res.status(500).json({ message: 'Webhook handling failed' });
