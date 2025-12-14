@@ -159,7 +159,6 @@ async function sendAgentOrderNotification(order) {
 }
 
 exports.stripeWebhook = async (req, res) => {
-  console.log('>>> STRIPE WEBHOOK HIT <<<');
   const sig = req.headers['stripe-signature'];
 
   let event;
@@ -169,9 +168,7 @@ exports.stripeWebhook = async (req, res) => {
       sig,
       process.env.STRIPE_WEBHOOK_SECRET
     );
-    console.log('>>> Webhook event type:', event.type);
   } catch (err) {
-    console.log('>>> Webhook signature verification failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
