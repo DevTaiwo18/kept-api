@@ -70,6 +70,14 @@ const DOCUSIGN_PRIVATE_KEY = process.env.DOCUSIGN_PRIVATE_KEY;
 const DOCUSIGN_BASE_PATH = process.env.DOCUSIGN_BASE_PATH;
 
 const getApiClient = async () => {
+  console.log('=== DocuSign Auth Debug ===');
+  console.log('DOCUSIGN_INTEGRATION_KEY:', DOCUSIGN_INTEGRATION_KEY);
+  console.log('DOCUSIGN_USER_ID:', DOCUSIGN_USER_ID);
+  console.log('DOCUSIGN_ACCOUNT_ID:', DOCUSIGN_ACCOUNT_ID);
+  console.log('DOCUSIGN_BASE_PATH:', DOCUSIGN_BASE_PATH);
+  console.log('DOCUSIGN_PRIVATE_KEY exists:', !!DOCUSIGN_PRIVATE_KEY);
+  console.log('DOCUSIGN_PRIVATE_KEY_PATH:', DOCUSIGN_PRIVATE_KEY_PATH);
+
   const apiClient = new docusign.ApiClient();
   apiClient.setBasePath(DOCUSIGN_BASE_PATH);
 
@@ -77,22 +85,33 @@ const getApiClient = async () => {
   let privateKey;
   if (DOCUSIGN_PRIVATE_KEY) {
     privateKey = DOCUSIGN_PRIVATE_KEY.replace(/\\n/g, '\n');
+    console.log('Using DOCUSIGN_PRIVATE_KEY from env variable');
   } else {
     privateKey = fs.readFileSync(path.resolve(DOCUSIGN_PRIVATE_KEY_PATH), 'utf8');
+    console.log('Using private key from file:', DOCUSIGN_PRIVATE_KEY_PATH);
   }
-  
-  const results = await apiClient.requestJWTUserToken(
-    DOCUSIGN_INTEGRATION_KEY,
-    DOCUSIGN_USER_ID,
-    ['signature', 'impersonation'],
-    privateKey,
-    3600
-  );
 
-  const accessToken = results.body.access_token;
-  apiClient.addDefaultHeader('Authorization', 'Bearer ' + accessToken);
-  
-  return apiClient;
+  console.log('Private key starts with:', privateKey.substring(0, 50));
+  console.log('Private key length:', privateKey.length);
+
+  try {
+    const results = await apiClient.requestJWTUserToken(
+      DOCUSIGN_INTEGRATION_KEY,
+      DOCUSIGN_USER_ID,
+      ['signature', 'impersonation'],
+      privateKey,
+      3600
+    );
+
+    const accessToken = results.body.access_token;
+    apiClient.addDefaultHeader('Authorization', 'Bearer ' + accessToken);
+    console.log('DocuSign auth successful!');
+
+    return apiClient;
+  } catch (error) {
+    console.error('DocuSign JWT Auth Error:', error.response?.body || error.message);
+    throw error;
+  }
 };
 
 const downloadFile = async (url) => {
