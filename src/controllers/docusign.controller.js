@@ -281,8 +281,11 @@ exports.docusignWebhook = async (req, res) => {
     const event = req.body;
     const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@keptestate.com';
 
+    console.log('DocuSign webhook received:', JSON.stringify(event, null, 2));
+
     if (event.event === 'envelope-completed') {
       const envelopeId = event.data.envelopeId;
+      console.log('Processing envelope-completed for envelopeId:', envelopeId);
 
       const job = await ClientJob.findOneAndUpdate(
         { docusignEnvelopeId: envelopeId },
@@ -294,9 +297,16 @@ exports.docusignWebhook = async (req, res) => {
         { new: true }
       );
 
+      console.log('Job found for envelope:', job ? job._id : 'NOT FOUND');
+
       if (job) {
+        console.log('Preparing to send contract signed emails...');
+        console.log('Admin email:', ADMIN_EMAIL);
+        console.log('Client email:', job.contactEmail);
+
         // Send email to Admin
         try {
+          console.log('Sending admin email for contract signed...');
           await sendEmail({
             to: ADMIN_EMAIL,
             subject: `Contract Signed - ${job.contractSignor}`,
@@ -313,13 +323,15 @@ exports.docusignWebhook = async (req, res) => {
               </ul>
             `
           });
-          console.log('Admin notification sent for signed contract:', job._id);
+          console.log('Admin notification sent successfully for signed contract:', job._id);
         } catch (emailErr) {
-          console.error('Failed to send admin notification:', emailErr);
+          console.error('Failed to send admin notification:', emailErr.message);
+          console.error('Admin email error stack:', emailErr.stack);
         }
 
         // Send email to Client
         try {
+          console.log('Sending client email for contract signed...');
           await sendEmail({
             to: job.contactEmail,
             subject: 'Thank You for Signing Your Contract - Kept House',
@@ -333,10 +345,13 @@ exports.docusignWebhook = async (req, res) => {
               <p>Thank you for choosing Kept House!</p>
             `
           });
-          console.log('Client confirmation sent for signed contract:', job._id);
+          console.log('Client confirmation sent successfully for signed contract:', job._id);
         } catch (emailErr) {
-          console.error('Failed to send client confirmation:', emailErr);
+          console.error('Failed to send client confirmation:', emailErr.message);
+          console.error('Client email error stack:', emailErr.stack);
         }
+      } else {
+        console.log('No job found for envelopeId:', envelopeId);
       }
     }
 

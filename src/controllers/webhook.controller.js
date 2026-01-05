@@ -178,15 +178,18 @@ exports.stripeWebhook = async (req, res) => {
 
     if (metadata.depositType === 'initial_deposit') {
       const jobId = metadata.jobId;
+      console.log('Processing deposit payment for jobId:', jobId);
 
       try {
         const job = await ClientJob.findById(jobId);
 
         if (!job) {
+          console.log('No job found for deposit jobId:', jobId);
           return res.json({ received: true });
         }
 
         if (job.status === 'active' && job.depositPaidAt) {
+          console.log('Deposit already processed for job:', jobId);
           return res.json({ received: true });
         }
 
@@ -207,9 +210,15 @@ exports.stripeWebhook = async (req, res) => {
         job.finance.net = (job.finance.gross || 0) - serviceFee - keptHouseCommission - haulingCost + depositAmount;
 
         await job.save();
+        console.log('Deposit saved for job:', job._id, 'Amount:', depositAmount);
+
+        console.log('Preparing to send deposit emails...');
+        console.log('Admin email:', ADMIN_EMAIL);
+        console.log('Client email:', job.contactEmail);
 
         // Send email to Admin
         try {
+          console.log('Sending admin email for deposit...');
           await sendEmail({
             to: ADMIN_EMAIL,
             subject: `Deposit Received - ${job.contractSignor}`,
@@ -227,13 +236,15 @@ exports.stripeWebhook = async (req, res) => {
               </ul>
             `
           });
-          console.log('Admin notification sent for deposit:', job._id);
+          console.log('Admin notification sent successfully for deposit:', job._id);
         } catch (emailErr) {
-          console.error('Failed to send admin deposit notification:', emailErr);
+          console.error('Failed to send admin deposit notification:', emailErr.message);
+          console.error('Admin deposit email error stack:', emailErr.stack);
         }
 
         // Send email to Client
         try {
+          console.log('Sending client email for deposit...');
           await sendEmail({
             to: job.contactEmail,
             subject: 'Deposit Received - Kept House',
@@ -247,9 +258,10 @@ exports.stripeWebhook = async (req, res) => {
               <p>Thank you for choosing Kept House!</p>
             `
           });
-          console.log('Client confirmation sent for deposit:', job._id);
+          console.log('Client confirmation sent successfully for deposit:', job._id);
         } catch (emailErr) {
-          console.error('Failed to send client deposit confirmation:', emailErr);
+          console.error('Failed to send client deposit confirmation:', emailErr.message);
+          console.error('Client deposit email error stack:', emailErr.stack);
         }
 
         return res.json({ received: true });
