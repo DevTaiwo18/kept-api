@@ -5,6 +5,63 @@ const ClientJob = require('../models/ClientJob');
 const axios = require('axios');
 const { sendEmail } = require('../utils/sendEmail');
 
+function getEmailTemplate(name, content) {
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f4f4f4;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px 0;">
+          <tr>
+            <td align="center">
+              <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <tr>
+                  <td style="background: linear-gradient(135deg, #e6c35a 0%, #d4af37 100%); padding: 30px 40px; text-align: center;">
+                    <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-family: Arial, sans-serif; font-weight: 600;">
+                      Kept House
+                    </h1>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 40px 40px 30px 40px;">
+                    <h2 style="color: #101010; margin: 0 0 20px 0; font-size: 22px; font-family: Arial, sans-serif; font-weight: 500;">
+                      Hi ${name},
+                    </h2>
+                    ${content}
+                  </td>
+                </tr>
+                <tr>
+                  <td style="background-color: #f9f9f9; padding: 25px 40px; border-top: 1px solid #e0e0e0;">
+                    <p style="font-size: 14px; line-height: 1.6; color: #666; margin: 0 0 10px 0; font-family: Arial, sans-serif;">
+                      Best regards,<br/>
+                      <strong style="color: #333;">The Kept House Team</strong>
+                    </p>
+                    <p style="font-size: 12px; line-height: 1.5; color: #999; margin: 15px 0 0 0; font-family: Arial, sans-serif;">
+                      If you have any questions, feel free to contact us at admin@keptestate.com
+                    </p>
+                  </td>
+                </tr>
+              </table>
+              <table width="600" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="padding: 20px; text-align: center;">
+                    <p style="font-size: 12px; color: #999; margin: 0; font-family: Arial, sans-serif;">
+                      © ${new Date().getFullYear()} Kept House. All rights reserved.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  `;
+}
+
 const DOCUSIGN_INTEGRATION_KEY = process.env.DOCUSIGN_INTEGRATION_KEY;
 const DOCUSIGN_USER_ID = process.env.DOCUSIGN_USER_ID;
 const DOCUSIGN_ACCOUNT_ID = process.env.DOCUSIGN_ACCOUNT_ID;
@@ -229,8 +286,6 @@ exports.checkContractStatus = async (req, res) => {
 
     const envelope = await envelopesApi.getEnvelope(DOCUSIGN_ACCOUNT_ID, job.docusignEnvelopeId);
 
-    console.log(`📋 DocuSign Status for Job ${jobId}:`, envelope.status);
-
     if (envelope.status === 'completed') {
       const wasAlreadySigned = job.contractSignedByClient;
 
@@ -239,60 +294,68 @@ exports.checkContractStatus = async (req, res) => {
       job.docusignStatus = 'completed';
       await job.save();
 
-      console.log(`✅ Job ${jobId} marked as signed`);
-
       // Only send emails if this is the first time detecting the signature
       if (!wasAlreadySigned) {
         const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@keptestate.com';
-        console.log('Contract just signed, sending notification emails...');
-        console.log('Admin email:', ADMIN_EMAIL);
-        console.log('Client email:', job.contactEmail);
+
+        const adminContent = `
+          <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
+            Great news! <strong>${job.contractSignor}</strong> has signed the contract.
+          </p>
+          <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 20px; margin: 20px 0; border-radius: 4px;">
+            <p style="font-size: 14px; line-height: 1.8; color: #333; margin: 0; font-family: Arial, sans-serif;">
+              <strong style="color: #101010;">Client Name:</strong> ${job.contractSignor}<br/>
+              <strong style="color: #101010;">Property Address:</strong> ${job.propertyAddress}<br/>
+              <strong style="color: #101010;">Email:</strong> ${job.contactEmail}<br/>
+              <strong style="color: #101010;">Phone:</strong> ${job.contactPhone}
+            </p>
+          </div>
+          <div style="background-color: #e8f5e9; border-left: 4px solid #4caf50; padding: 20px; margin: 20px 0; border-radius: 4px;">
+            <p style="font-size: 14px; line-height: 1.6; color: #2e7d32; margin: 0; font-family: Arial, sans-serif;">
+              <strong>Next Step:</strong> Go to the dashboard to continue the next steps and update the project status accordingly.
+            </p>
+          </div>
+        `;
+
+        const clientContent = `
+          <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 0 0 15px 0; font-family: Arial, sans-serif;">
+            We have received your signed contract for the property at:
+          </p>
+          <div style="background-color: #f9f9f9; border-left: 4px solid #e6c35a; padding: 20px; margin: 20px 0; border-radius: 4px;">
+            <p style="font-size: 14px; line-height: 1.8; color: #333; margin: 0; font-family: Arial, sans-serif;">
+              <strong style="color: #101010;">${job.propertyAddress}</strong>
+            </p>
+          </div>
+          <div style="background-color: #e8f5e9; border-left: 4px solid #4caf50; padding: 20px; margin: 20px 0; border-radius: 4px;">
+            <p style="font-size: 14px; line-height: 1.6; color: #2e7d32; margin: 0; font-family: Arial, sans-serif;">
+              <strong>Next Step:</strong> You can go to your dashboard to continue with the next action.
+            </p>
+          </div>
+          <p style="font-size: 16px; line-height: 1.6; color: #333; margin: 20px 0 0 0; font-family: Arial, sans-serif;">
+            Thank you for choosing Kept House!
+          </p>
+        `;
 
         // Send email to Admin
         try {
-          console.log('Sending admin email for contract signed...');
           await sendEmail({
             to: ADMIN_EMAIL,
             subject: `Contract Signed - ${job.contractSignor}`,
-            html: `
-              <h2>Contract Signed</h2>
-              <p><strong>${job.contractSignor}</strong> has signed the contract for the property at:</p>
-              <p><strong>${job.propertyAddress}</strong></p>
-              <hr>
-              <p>Go to the dashboard to continue the next steps and update the project status accordingly.</p>
-              <p><strong>Client Contact:</strong></p>
-              <ul>
-                <li>Email: ${job.contactEmail}</li>
-                <li>Phone: ${job.contactPhone}</li>
-              </ul>
-            `
+            html: getEmailTemplate('Admin', adminContent)
           });
-          console.log('Admin notification sent successfully for signed contract:', job._id);
         } catch (emailErr) {
           console.error('Failed to send admin notification:', emailErr.message);
-          console.error('Admin email error stack:', emailErr.stack);
         }
 
         // Send email to Client
         try {
-          console.log('Sending client email for contract signed...');
           await sendEmail({
             to: job.contactEmail,
             subject: 'Thank You for Signing Your Contract - Kept House',
-            html: `
-              <h2>Thank You, ${job.contractSignor}!</h2>
-              <p>We have received your signed contract for the property at:</p>
-              <p><strong>${job.propertyAddress}</strong></p>
-              <hr>
-              <p>You can go to your dashboard to continue with the next action.</p>
-              <p>If you have any questions, please don't hesitate to reach out.</p>
-              <p>Thank you for choosing Kept House!</p>
-            `
+            html: getEmailTemplate(job.contractSignor, clientContent)
           });
-          console.log('Client confirmation sent successfully for signed contract:', job._id);
         } catch (emailErr) {
           console.error('Failed to send client confirmation:', emailErr.message);
-          console.error('Client email error stack:', emailErr.stack);
         }
       }
 
@@ -336,80 +399,18 @@ const getStatusMessage = (status) => {
 exports.docusignWebhook = async (req, res) => {
   try {
     const event = req.body;
-    const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@keptestate.com';
-
-    console.log('DocuSign webhook received:', JSON.stringify(event, null, 2));
 
     if (event.event === 'envelope-completed') {
       const envelopeId = event.data.envelopeId;
-      console.log('Processing envelope-completed for envelopeId:', envelopeId);
 
-      const job = await ClientJob.findOneAndUpdate(
+      await ClientJob.findOneAndUpdate(
         { docusignEnvelopeId: envelopeId },
         {
           contractSignedByClient: true,
           contractSignedAt: new Date(),
           docusignStatus: 'completed'
-        },
-        { new: true }
+        }
       );
-
-      console.log('Job found for envelope:', job ? job._id : 'NOT FOUND');
-
-      if (job) {
-        console.log('Preparing to send contract signed emails...');
-        console.log('Admin email:', ADMIN_EMAIL);
-        console.log('Client email:', job.contactEmail);
-
-        // Send email to Admin
-        try {
-          console.log('Sending admin email for contract signed...');
-          await sendEmail({
-            to: ADMIN_EMAIL,
-            subject: `Contract Signed - ${job.contractSignor}`,
-            html: `
-              <h2>Contract Signed</h2>
-              <p><strong>${job.contractSignor}</strong> has signed the contract for the property at:</p>
-              <p><strong>${job.propertyAddress}</strong></p>
-              <hr>
-              <p>Go to the dashboard to continue the next steps and update the project status accordingly.</p>
-              <p><strong>Client Contact:</strong></p>
-              <ul>
-                <li>Email: ${job.contactEmail}</li>
-                <li>Phone: ${job.contactPhone}</li>
-              </ul>
-            `
-          });
-          console.log('Admin notification sent successfully for signed contract:', job._id);
-        } catch (emailErr) {
-          console.error('Failed to send admin notification:', emailErr.message);
-          console.error('Admin email error stack:', emailErr.stack);
-        }
-
-        // Send email to Client
-        try {
-          console.log('Sending client email for contract signed...');
-          await sendEmail({
-            to: job.contactEmail,
-            subject: 'Thank You for Signing Your Contract - Kept House',
-            html: `
-              <h2>Thank You, ${job.contractSignor}!</h2>
-              <p>We have received your signed contract for the property at:</p>
-              <p><strong>${job.propertyAddress}</strong></p>
-              <hr>
-              <p>You can go to your dashboard to continue with the next action.</p>
-              <p>If you have any questions, please don't hesitate to reach out.</p>
-              <p>Thank you for choosing Kept House!</p>
-            `
-          });
-          console.log('Client confirmation sent successfully for signed contract:', job._id);
-        } catch (emailErr) {
-          console.error('Failed to send client confirmation:', emailErr.message);
-          console.error('Client email error stack:', emailErr.stack);
-        }
-      } else {
-        console.log('No job found for envelopeId:', envelopeId);
-      }
     }
 
     if (event.event === 'envelope-sent') {
