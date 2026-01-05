@@ -208,6 +208,50 @@ exports.stripeWebhook = async (req, res) => {
 
         await job.save();
 
+        // Send email to Admin
+        try {
+          await sendEmail({
+            to: ADMIN_EMAIL,
+            subject: `Deposit Received - ${job.contractSignor}`,
+            html: `
+              <h2>Deposit Payment Received</h2>
+              <p><strong>${job.contractSignor}</strong> has paid the deposit for the property at:</p>
+              <p><strong>${job.propertyAddress}</strong></p>
+              <p><strong>Deposit Amount:</strong> $${depositAmount.toFixed(2)}</p>
+              <hr>
+              <p>Go to the dashboard to continue the next steps and update the project status accordingly.</p>
+              <p><strong>Client Contact:</strong></p>
+              <ul>
+                <li>Email: ${job.contactEmail}</li>
+                <li>Phone: ${job.contactPhone}</li>
+              </ul>
+            `
+          });
+          console.log('Admin notification sent for deposit:', job._id);
+        } catch (emailErr) {
+          console.error('Failed to send admin deposit notification:', emailErr);
+        }
+
+        // Send email to Client
+        try {
+          await sendEmail({
+            to: job.contactEmail,
+            subject: 'Deposit Received - Kept House',
+            html: `
+              <h2>Thank You, ${job.contractSignor}!</h2>
+              <p>We have received your deposit payment of <strong>$${depositAmount.toFixed(2)}</strong> for the property at:</p>
+              <p><strong>${job.propertyAddress}</strong></p>
+              <hr>
+              <p>You can go to your dashboard to continue with the next action.</p>
+              <p>If you have any questions, please don't hesitate to reach out.</p>
+              <p>Thank you for choosing Kept House!</p>
+            `
+          });
+          console.log('Client confirmation sent for deposit:', job._id);
+        } catch (emailErr) {
+          console.error('Failed to send client deposit confirmation:', emailErr);
+        }
+
         return res.json({ received: true });
 
       } catch (e) {

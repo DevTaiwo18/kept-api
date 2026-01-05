@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const ClientJob = require('../models/ClientJob');
 const axios = require('axios');
+const { sendEmail } = require('../utils/sendEmail');
 
 const DOCUSIGN_INTEGRATION_KEY = process.env.DOCUSIGN_INTEGRATION_KEY;
 const DOCUSIGN_USER_ID = process.env.DOCUSIGN_USER_ID;
@@ -278,18 +279,65 @@ const getStatusMessage = (status) => {
 exports.docusignWebhook = async (req, res) => {
   try {
     const event = req.body;
+    const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@keptestate.com';
 
     if (event.event === 'envelope-completed') {
       const envelopeId = event.data.envelopeId;
-      
-      await ClientJob.findOneAndUpdate(
+
+      const job = await ClientJob.findOneAndUpdate(
         { docusignEnvelopeId: envelopeId },
         {
           contractSignedByClient: true,
           contractSignedAt: new Date(),
           docusignStatus: 'completed'
-        }
+        },
+        { new: true }
       );
+
+      if (job) {
+        // Send email to Admin
+        try {
+          await sendEmail({
+            to: ADMIN_EMAIL,
+            subject: `Contract Signed - ${job.contractSignor}`,
+            html: `
+              <h2>Contract Signed</h2>
+              <p><strong>${job.contractSignor}</strong> has signed the contract for the property at:</p>
+              <p><strong>${job.propertyAddress}</strong></p>
+              <hr>
+              <p>Go to the dashboard to continue the next steps and update the project status accordingly.</p>
+              <p><strong>Client Contact:</strong></p>
+              <ul>
+                <li>Email: ${job.contactEmail}</li>
+                <li>Phone: ${job.contactPhone}</li>
+              </ul>
+            `
+          });
+          console.log('Admin notification sent for signed contract:', job._id);
+        } catch (emailErr) {
+          console.error('Failed to send admin notification:', emailErr);
+        }
+
+        // Send email to Client
+        try {
+          await sendEmail({
+            to: job.contactEmail,
+            subject: 'Thank You for Signing Your Contract - Kept House',
+            html: `
+              <h2>Thank You, ${job.contractSignor}!</h2>
+              <p>We have received your signed contract for the property at:</p>
+              <p><strong>${job.propertyAddress}</strong></p>
+              <hr>
+              <p>You can go to your dashboard to continue with the next action.</p>
+              <p>If you have any questions, please don't hesitate to reach out.</p>
+              <p>Thank you for choosing Kept House!</p>
+            `
+          });
+          console.log('Client confirmation sent for signed contract:', job._id);
+        } catch (emailErr) {
+          console.error('Failed to send client confirmation:', emailErr);
+        }
+      }
     }
 
     if (event.event === 'envelope-sent') {
