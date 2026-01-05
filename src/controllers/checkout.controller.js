@@ -62,18 +62,11 @@ async function getOriginAddress(items) {
         throw new Error('Job not found');
     }
     
-    console.log('Raw propertyAddress from job:', job.propertyAddress);
-
     const addressParts = job.propertyAddress.split(',').map(p => p.trim());
-    console.log('Address parts after split:', addressParts);
-
     const stateZip = addressParts[2] || '';
-    console.log('State/Zip part:', stateZip);
-
     const stateZipParts = stateZip.split(' ');
-    console.log('State/Zip parts after split:', stateZipParts);
 
-    const originAddress = {
+    return {
         jobId: job._id,
         address: addressParts[0] || job.propertyAddress,
         city: addressParts[1] || '',
@@ -82,10 +75,6 @@ async function getOriginAddress(items) {
         contactName: job.contractSignor || 'Estate Sale',
         phoneNumber: job.contactPhone || '(513) 609-4731'
     };
-
-    console.log('Final origin address for FedEx:', JSON.stringify(originAddress, null, 2));
-
-    return originAddress;
 }
 
 function toStripeLineItems(items, deliveryFee, taxAmount, currency = 'usd') {
