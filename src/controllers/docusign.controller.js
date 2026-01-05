@@ -232,12 +232,69 @@ exports.checkContractStatus = async (req, res) => {
     console.log(`📋 DocuSign Status for Job ${jobId}:`, envelope.status);
 
     if (envelope.status === 'completed') {
+      const wasAlreadySigned = job.contractSignedByClient;
+
       job.contractSignedByClient = true;
       job.contractSignedAt = new Date();
       job.docusignStatus = 'completed';
       await job.save();
 
       console.log(`✅ Job ${jobId} marked as signed`);
+
+      // Only send emails if this is the first time detecting the signature
+      if (!wasAlreadySigned) {
+        const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@keptestate.com';
+        console.log('Contract just signed, sending notification emails...');
+        console.log('Admin email:', ADMIN_EMAIL);
+        console.log('Client email:', job.contactEmail);
+
+        // Send email to Admin
+        try {
+          console.log('Sending admin email for contract signed...');
+          await sendEmail({
+            to: ADMIN_EMAIL,
+            subject: `Contract Signed - ${job.contractSignor}`,
+            html: `
+              <h2>Contract Signed</h2>
+              <p><strong>${job.contractSignor}</strong> has signed the contract for the property at:</p>
+              <p><strong>${job.propertyAddress}</strong></p>
+              <hr>
+              <p>Go to the dashboard to continue the next steps and update the project status accordingly.</p>
+              <p><strong>Client Contact:</strong></p>
+              <ul>
+                <li>Email: ${job.contactEmail}</li>
+                <li>Phone: ${job.contactPhone}</li>
+              </ul>
+            `
+          });
+          console.log('Admin notification sent successfully for signed contract:', job._id);
+        } catch (emailErr) {
+          console.error('Failed to send admin notification:', emailErr.message);
+          console.error('Admin email error stack:', emailErr.stack);
+        }
+
+        // Send email to Client
+        try {
+          console.log('Sending client email for contract signed...');
+          await sendEmail({
+            to: job.contactEmail,
+            subject: 'Thank You for Signing Your Contract - Kept House',
+            html: `
+              <h2>Thank You, ${job.contractSignor}!</h2>
+              <p>We have received your signed contract for the property at:</p>
+              <p><strong>${job.propertyAddress}</strong></p>
+              <hr>
+              <p>You can go to your dashboard to continue with the next action.</p>
+              <p>If you have any questions, please don't hesitate to reach out.</p>
+              <p>Thank you for choosing Kept House!</p>
+            `
+          });
+          console.log('Client confirmation sent successfully for signed contract:', job._id);
+        } catch (emailErr) {
+          console.error('Failed to send client confirmation:', emailErr.message);
+          console.error('Client email error stack:', emailErr.stack);
+        }
+      }
 
       return res.json({
         success: true,
