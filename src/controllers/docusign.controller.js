@@ -84,8 +84,16 @@ const getApiClient = async () => {
   // Support both: env variable (for production) or file path (for local dev)
   let privateKey;
   if (DOCUSIGN_PRIVATE_KEY) {
-    privateKey = DOCUSIGN_PRIVATE_KEY.replace(/\\n/g, '\n');
-    console.log('Using DOCUSIGN_PRIVATE_KEY from env variable');
+    // Handle both base64 encoded and \n-escaped formats
+    if (DOCUSIGN_PRIVATE_KEY.startsWith('LS0t')) {
+      // Base64 encoded
+      privateKey = Buffer.from(DOCUSIGN_PRIVATE_KEY, 'base64').toString('utf8');
+      console.log('Using DOCUSIGN_PRIVATE_KEY from env (base64 decoded)');
+    } else {
+      // \n escaped format
+      privateKey = DOCUSIGN_PRIVATE_KEY.replace(/\\n/g, '\n');
+      console.log('Using DOCUSIGN_PRIVATE_KEY from env (escaped newlines)');
+    }
   } else {
     privateKey = fs.readFileSync(path.resolve(DOCUSIGN_PRIVATE_KEY_PATH), 'utf8');
     console.log('Using private key from file:', DOCUSIGN_PRIVATE_KEY_PATH);
