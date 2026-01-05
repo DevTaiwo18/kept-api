@@ -218,6 +218,7 @@ exports.createShippingLabel = async (order, originAddress) => {
     });
 
     const requestBody = {
+      labelResponseOptions: 'URL_ONLY',
       requestedShipment: {
         shipper: {
           contact: {
